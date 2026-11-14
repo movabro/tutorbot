@@ -300,4 +300,4 @@ tutorbot stats
 - `--dry-run`은 Dynalist 쓰기와 실제 DB 변경을 막지만, 기본 설정에서는 실제 LLM API 호출까지 막지는 않습니다.
 - 현재 CLI에는 매일 자동 실행 기능이 없습니다. 정기 실행이 필요하면 외부 cron 또는 systemd timer에서 `tutorbot run`을 호출하도록 별도로 설정해야 합니다.
 
-기획·내부 동작 상세는 [spec_v0.2.md](./spec_v0.2.md)를 참고하세요.
+최신 다중 도메인 기획은 [spec_v0.3.md](./specs/spec_v0.3.md)를, 기존 학습 상세 명세는 [spec_v0.2.md](./specs/spec_v0.2.md)를 참고하세요.

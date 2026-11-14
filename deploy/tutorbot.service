@@ -1,0 +1,12 @@
+[Unit]
+Description=TutorBot Daily Dynalist Batch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/movabro/Documents/tutor_ws
+EnvironmentFile=-/home/movabro/Documents/tutor_ws/.env
+ExecStart=/usr/bin/python3 /home/movabro/Documents/tutor_ws/run_tutorbot.py run -c /home/movabro/Documents/tutor_ws/config.toml
+StandardOutput=journal
+StandardError=journal

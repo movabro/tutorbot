@@ -1,0 +1,8 @@
+.venv/
+.env
+data/
+config.toml
+__pycache__/
+*.egg-info/
+.pytest_cache/
+

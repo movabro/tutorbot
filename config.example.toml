@@ -1,0 +1,34 @@
+timezone = "Asia/Seoul"
+db_path = "data/tutorbot.sqlite3"
+
+[dynalist]
+token_env = "DYNALIST_TOKEN"          # token comes from env only
+file_ids = ["<doc id>"]
+
+[tags]
+goal  = ["목표", "goal"]
+dump  = ["지식덤프", "dump"]
+study = ["공부", "study"]
+bot   = "tutorbot"
+
+[quiz]
+per_day = 5
+max_new_per_day = 2
+expire_days = 3
+skip_answers = ["?", "모름", "pass", "패스"]
+
+[processing]
+min_entry_chars = 20
+settle_minutes = 60
+similarity_skip = 0.95
+max_entries_per_run = 20
+entry_max_chars = 6000
+priority_quiz = true
+
+[llm]
+provider = "gemini"                   # gemini | openai | anthropic
+api_key_env = "LLM_API_KEY"
+model_smart = "<set me>"
+model_fast = "<set me>"
+daily_token_budget = 300000
+index_full_threshold = 150

@@ -1,0 +1,306 @@
+"""Daily batch pipeline orchestration (spec §6.2, §6.4)."""
+from __future__ import annotations
+
+import fcntl
+import json
+import shutil
+import sqlite3
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from . import clock, ingest, render
+from .dynalist.client import DynalistClient
+from .dynalist.tree import NodeIndex
+from .dynalist.writer import WriteReport, enqueue_op, flush_outbox
+from .engine.dumps import process_dumps
+from .engine.goals import process_goals
+from .engine.progress import update_progress
+from .engine.quiz import expire_attempts, grade_open_attempts, issue_daily_quizzes
+from .engine.study import process_study_entries
+from .engine.weekly import process_weekly_reports
+from .llm.client import LLMClient
+
+
+@dataclass
+class RunResult:
+    run_id: int
+    run_date: str
+    status: str  # ok | partial | failed
+    stats: dict[str, Any] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+
+
+class FileLock:
+    def __init__(self, path: str | Path = "data/tutorbot.lock") -> None:
+        self.path = Path(path)
+        self._fd: Any = None
+
+    def __enter__(self) -> "FileLock":
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = open(self.path, "w")
+        try:
+            fcntl.flock(self._fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as e:
+            self._fd.close()
+            self._fd = None
+            raise RuntimeError(f"tutorbot is already running (lock: {self.path})") from e
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd.fileno(), fcntl.LOCK_UN)
+            finally:
+                self._fd.close()
+                self._fd = None
+
+
+def _enqueue_ingest_warnings(
+    conn: sqlite3.Connection,
+    file_id: str,
+    warnings: list[tuple[str, str, str]],
+    run_id: int,
+    bot_tag: str = "tutorbot",
+) -> int:
+    count = 0
+    conn.execute("BEGIN")
+    try:
+        for kind, nid, reason in warnings:
+            op_key = f"warn:{kind}:{file_id}:{nid}:{reason[:24]}"
+            if enqueue_op(
+                conn,
+                run_id=run_id,
+                op_key=op_key,
+                file_id=file_id,
+                action="insert",
+                parent_ref=f"node:{nid}",
+                idx=-1,
+                payload={"content": render.warning_node(reason, bot_tag)},
+                bot_kind="warning",
+                bot_ref_id=None,
+                marker=render.marker("warning", f"{kind}:{nid}"),
+            ):
+                count += 1
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return count
+
+
+def backup_sqlite_db(db_path: str | Path, run_date: str, keep_days: int = 7) -> Path | None:
+    """Copy SQLite DB to `<db_dir>/backup/tutorbot-YYYYMMDD.sqlite3` before batch run, keeping `keep_days` (spec §13)."""
+    src = Path(db_path)
+    if str(db_path) == ":memory:" or not src.exists():
+        return None
+    backup_dir = src.parent / "backup"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    ymd = run_date.replace("-", "")
+    dest = backup_dir / f"tutorbot-{ymd}.sqlite3"
+    shutil.copy2(src, dest)
+    backups = sorted(backup_dir.glob("tutorbot-*.sqlite3"))
+    if len(backups) > keep_days:
+        for old in backups[: len(backups) - keep_days]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    return dest
+
+
+def run_pipeline(
+    conn: sqlite3.Connection,
+    settings: Any,
+    dynalist: DynalistClient,
+    llm: LLMClient,
+    *,
+    run_date: str | None = None,
+    dry_run: bool = False,
+    lock_path: str | Path | None = None,
+) -> RunResult:
+    """Execute the daily batch pipeline (stages 0..14)."""
+    tz_name = getattr(settings, "timezone", "Asia/Seoul")
+    r_date = run_date or clock.local_date(tz_name).isoformat()
+    bot_tag = getattr(getattr(settings, "tags", None), "bot", "tutorbot")
+    file_ids: list[str] = list(getattr(getattr(settings, "dynalist", None), "file_ids", []))
+
+    lpath = lock_path or (Path(getattr(settings, "db_path", "data/tutorbot.sqlite3")).parent / "tutorbot.lock")
+    with FileLock(lpath):
+        if not dry_run:
+            backup_sqlite_db(getattr(settings, "db_path", "data/tutorbot.sqlite3"), r_date)
+
+        started_at = clock.now_iso()
+        cur = conn.execute(
+            "INSERT INTO run_log(run_date,started_at,status) VALUES(?,?,'running')",
+            (r_date, started_at),
+        )
+        run_id = int(cur.lastrowid)
+        llm.conn = conn
+        llm.run_id = run_id
+
+        errors: list[str] = []
+        stats: dict[str, Any] = {}
+
+        # Stage 1: Flush residual write_ops from previous runs
+        pre_flush = WriteReport()
+        if not dry_run:
+            pre_flush = flush_outbox(conn, dynalist)
+            stats["pre_flush"] = {
+                "done": pre_flush.done,
+                "reconciled": pre_flush.reconciled,
+                "skipped": pre_flush.skipped,
+                "failed": pre_flush.failed,
+            }
+            errors.extend(pre_flush.errors)
+
+        # Stage 2: Read documents -> NodeIndex
+        indices: dict[str, NodeIndex] = {}
+        for fid in file_ids:
+            try:
+                indices[fid] = NodeIndex.from_doc_read(fid, dynalist.doc_read(fid))
+            except Exception as e:
+                errors.append(f"doc_read({fid}) failed: {e}")
+
+        if file_ids and not indices:
+            # All documents failed to read -> run=failed
+            finished_at = clock.now_iso()
+            conn.execute(
+                "UPDATE run_log SET finished_at=?, status='failed', error_summary=?, dynalist_reads=? WHERE id=?",
+                (finished_at, "; ".join(errors), dynalist.stats["reads"], run_id),
+            )
+            return RunResult(run_id=run_id, run_date=r_date, status="failed", stats=stats, errors=errors)
+
+        # Stages 3 & 4: Registry reconciliation + Parsing/Ingest
+        ingest_rep = ingest.IngestReport()
+        for fid, idx_obj in indices.items():
+            conn.execute("BEGIN")
+            try:
+                before_w = len(ingest_rep.warnings)
+                ingest.ingest_index(conn, idx_obj, settings, ingest_rep)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            new_warnings = ingest_rep.warnings[before_w:]
+            if new_warnings:
+                _enqueue_ingest_warnings(conn, fid, new_warnings, run_id, bot_tag)
+        stats["ingest"] = ingest_rep.summary()
+
+        # Stage 5: Goals & Curriculum (T1)
+        goal_stats = process_goals(conn, indices, llm, r_date, run_id=run_id, bot_tag=bot_tag)
+        stats["goals"] = goal_stats
+        if goal_stats["errors"]:
+            errors.append(f"goal curriculum errors: {goal_stats['errors']}")
+
+        proc_cfg = getattr(settings, "processing", None)
+        priority_quiz = bool(getattr(proc_cfg, "priority_quiz", True))
+        llm_cfg = getattr(settings, "llm", None)
+        idx_thresh = int(getattr(llm_cfg, "index_full_threshold", 150))
+        token_budget = int(getattr(llm_cfg, "daily_token_budget", 300000))
+
+        def _run_quiz_stages() -> tuple[dict, dict, dict]:
+            g_st = grade_open_attempts(conn, llm, settings, r_date, run_id=run_id)
+            e_st = expire_attempts(conn, indices, r_date, run_id=run_id)
+            i_st = issue_daily_quizzes(conn, settings, r_date, run_id=run_id)
+            stats["quiz_grade"] = g_st
+            stats["quiz_expire"] = e_st
+            stats["quiz_issue"] = i_st
+            if g_st["errors"]:
+                errors.append(f"quiz grade errors: {g_st['errors']}")
+            return g_st, e_st, i_st
+
+        def _run_dump_and_study_stages() -> tuple[dict, dict]:
+            d_st = process_dumps(
+                conn,
+                llm,
+                run_id=run_id,
+                index_full_threshold=idx_thresh,
+                daily_token_budget=token_budget,
+            )
+            stats["dumps"] = d_st
+            if d_st["errors"]:
+                errors.append(f"dump evaluation errors: {d_st['errors']}")
+
+            s_st = process_study_entries(conn, indices, llm, settings, r_date, run_id=run_id)
+            stats["study"] = s_st
+            if s_st["errors"]:
+                errors.append(f"study entry errors: {s_st['errors']}")
+            return d_st, s_st
+
+        if priority_quiz:
+            # Default order (spec §6.4): 5.goals -> 8.grade -> 9.expire -> 10.issue -> 6.dumps -> 7.study
+            grade_stats, _, _ = _run_quiz_stages()
+            dump_stats, study_stats = _run_dump_and_study_stages()
+        else:
+            dump_stats, study_stats = _run_dump_and_study_stages()
+            grade_stats, _, _ = _run_quiz_stages()
+
+        # Stage 11: Progress update (concept node rendering, curriculum_root title, progress_report)
+        prog_stats = update_progress(conn, indices, r_date, run_id=run_id, bot_tag=bot_tag)
+        stats["progress"] = prog_stats
+
+        # Stage 12: Weekly report (T5) & Learner profile update (T6)
+        weekly_stats = process_weekly_reports(
+            conn,
+            llm,
+            r_date,
+            run_id=run_id,
+            bot_tag=bot_tag,
+            daily_token_budget=token_budget,
+        )
+        stats["weekly"] = weekly_stats
+        if weekly_stats["errors"]:
+            errors.append(f"weekly report errors: {weekly_stats['errors']}")
+
+        # Stage 13: Write (Outbox execution)
+        if dry_run:
+            pending_ops = conn.execute(
+                "SELECT op_key, action, parent_ref, target_ref, payload_json FROM write_op WHERE status='pending' ORDER BY seq ASC"
+            ).fetchall()
+            stats["dry_run_pending_ops"] = [dict(r) for r in pending_ops]
+            write_rep = WriteReport()
+        else:
+            write_rep = flush_outbox(conn, dynalist, indices=indices)
+            stats["write"] = {
+                "done": write_rep.done,
+                "reconciled": write_rep.reconciled,
+                "skipped": write_rep.skipped,
+                "failed": write_rep.failed,
+                "changes_sent": write_rep.changes_sent,
+            }
+            errors.extend(write_rep.errors)
+
+        # Stage 14: Finish run_log
+        has_partial = (
+            bool(errors)
+            or goal_stats["errors"] > 0
+            or dump_stats["errors"] > 0
+            or study_stats["errors"] > 0
+            or grade_stats["errors"] > 0
+            or weekly_stats["errors"] > 0
+            or pre_flush.skipped > 0
+            or pre_flush.failed > 0
+            or write_rep.skipped > 0
+            or write_rep.failed > 0
+        )
+        final_status = "partial" if has_partial else "ok"
+        finished_at = clock.now_iso()
+        conn.execute(
+            "UPDATE run_log SET finished_at=?, status=?, stats_json=?, error_summary=?,"
+            " llm_calls=?, llm_prompt_tokens=?, llm_completion_tokens=?,"
+            " dynalist_reads=?, dynalist_changes=? WHERE id=?",
+            (
+                finished_at,
+                final_status,
+                json.dumps(stats, ensure_ascii=False),
+                "; ".join(errors) if errors else None,
+                llm.stats["calls"],
+                llm.stats["prompt_tokens"],
+                llm.stats["completion_tokens"],
+                dynalist.stats["reads"],
+                dynalist.stats["changes"],
+                run_id,
+            ),
+        )
+        return RunResult(run_id=run_id, run_date=r_date, status=final_status, stats=stats, errors=errors)

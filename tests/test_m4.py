@@ -177,7 +177,9 @@ def test_e2e_two_day_scenario_and_expiration(tmp_path):
     fllm.set(
         "t2_dump",
         {
+            "summary": "기본 개념을 알고 있으며 일부 영역을 보완해야 합니다.",
             "assessments": [{"concept_id": 2, "state": "partial", "evidence": "기본 개념 인지"}],
+            "issues": [],
             "gap_summary": ["라이프타임과 스마트 포인터 미학습"],
             "next_concepts": [2, 3],
         },

@@ -32,3 +32,6 @@ model_smart = "<set me>"
 model_fast = "<set me>"
 daily_token_budget = 300000
 index_full_threshold = 150
+
+[logging]
+log_file = "logs/tutorbot.log"

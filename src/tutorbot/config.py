@@ -129,6 +129,11 @@ class LLMCfg:
 
 
 @dataclass
+class LoggingCfg:
+    log_file: str = "logs/tutorbot.log"
+
+
+@dataclass
 class Settings:
     timezone: str = "Asia/Seoul"
     db_path: str = "data/tutorbot.sqlite3"
@@ -137,6 +142,7 @@ class Settings:
     quiz: QuizCfg = field(default_factory=QuizCfg)
     processing: ProcessingCfg = field(default_factory=ProcessingCfg)
     llm: LLMCfg = field(default_factory=LLMCfg)
+    logging: LoggingCfg = field(default_factory=LoggingCfg)
 
     @classmethod
     def model_validate(cls, d: dict[str, Any]) -> "Settings":
@@ -148,6 +154,7 @@ class Settings:
             quiz=QuizCfg(**d.get("quiz", {})),
             processing=ProcessingCfg(**d.get("processing", {})),
             llm=LLMCfg(**d.get("llm", {})),
+            logging=LoggingCfg(**d.get("logging", {})),
         )
 
     def dynalist_token(self) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import sys
 import tempfile
@@ -15,6 +16,38 @@ from .dynalist.client import DynalistClient, DynalistError
 from .dynalist.tree import NodeIndex
 from .llm.client import LLMClient
 from .pipeline import run_pipeline
+
+
+def _configure_logging(settings) -> Path:
+    log_path = Path(settings.logging.log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    app_logger = logging.getLogger("tutorbot")
+    app_logger.setLevel(logging.INFO)
+    app_logger.propagate = False
+    for existing in list(app_logger.handlers):
+        if existing.get_name() == "tutorbot-file":
+            app_logger.removeHandler(existing)
+            existing.close()
+
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    handler.set_name("tutorbot-file")
+    app_logger.addHandler(handler)
+    return log_path
+
+
+def _log_run_result(result) -> None:
+    logger = logging.getLogger(__name__)
+    logger.info("Run completed: id=%s date=%s status=%s", result.run_id, result.run_date, result.status)
+    for stage, values in result.stats.items():
+        if isinstance(values, dict):
+            details = ", ".join(f"{key}={value}" for key, value in values.items())
+        else:
+            details = str(values)
+        logger.info("%s: %s", stage, details)
+    for error in result.errors:
+        logger.error("%s", error)
 
 
 class _DefaultFakeLLMBackend:
@@ -31,7 +64,13 @@ class _DefaultFakeLLMBackend:
                 ],
             }
         if task == "t2_dump":
-            return {"assessments": [], "gap_summary": ["기초부터 학습 권장"], "next_concepts": []}
+            return {
+                "summary": "아직 지식 덤프에 근거가 없어 기초부터 학습을 권장합니다.",
+                "assessments": [],
+                "issues": [],
+                "gap_summary": ["기초부터 학습 권장"],
+                "next_concepts": [],
+            }
         if task == "t3_study":
             return {
                 "concepts": [],
@@ -123,6 +162,14 @@ def _llm_test(settings) -> None:
 
 
 def cmd_run(args, settings) -> int:
+    log_file = _configure_logging(settings)
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Run started: date=%s dry_run=%s fake_llm=%s",
+        args.date or "today",
+        args.dry_run,
+        args.fake_llm,
+    )
     if args.dry_run:
         src = Path(settings.db_path)
         tmp = Path(tempfile.mkdtemp()) / "dry.sqlite3"
@@ -151,15 +198,20 @@ def cmd_run(args, settings) -> int:
             conn=conn,
         )
 
-    res = run_pipeline(
-        conn,
-        settings,
-        cl,
-        llm,
-        run_date=args.date,
-        dry_run=bool(args.dry_run),
-    )
-    print(json.dumps({"run_id": res.run_id, "run_date": res.run_date, "status": res.status, "stats": res.stats}, ensure_ascii=False))
+    try:
+        res = run_pipeline(
+            conn,
+            settings,
+            cl,
+            llm,
+            run_date=args.date,
+            dry_run=bool(args.dry_run),
+        )
+    except Exception:
+        logger.exception("Run aborted")
+        raise
+    _log_run_result(res)
+    print(f"Run {res.run_id} ({res.run_date}): {res.status}; log: {log_file}")
     return 0 if res.status in ("ok", "partial") else 1
 
 

@@ -64,6 +64,46 @@ def feedback_header(date_str: str, bot_tag: str = "tutorbot") -> str:
     return f"🤖 피드백 ({date_str}) #{bot_tag}"
 
 
+def dump_feedback_header(date_str: str, bot_tag: str = "tutorbot") -> str:
+    return f"🤖 지식 덤프 평가 ({date_str}) #{bot_tag}"
+
+
+def dump_feedback_summary(summary: str) -> str:
+    return f"🧾 평가 요약: {summary.strip()}"
+
+
+def dump_issue_lines(verdict: str, concept_name: str, claim: str, correction: str, reason: str) -> list[str]:
+    if verdict == "incorrect":
+        return [
+            f"❌ 오개념 ({concept_name}): {claim}",
+            f"✅ 정정: {correction}",
+            f"💡 이유: {reason}",
+        ]
+    return [
+        f"🔎 확인 필요 ({concept_name}): {claim}",
+        f"💡 이유: {reason}",
+    ]
+
+
+def dump_curriculum_change(concept_name: str, old_state: str, new_state: str, reason: str) -> str:
+    return (
+        f"📘 커리큘럼 상태: {concept_name} "
+        f"{STATE_ICON.get(old_state, '⬜')}→{STATE_ICON.get(new_state, '⬜')} ({reason})"
+    )
+
+
+def dump_no_curriculum_change() -> str:
+    return "📘 커리큘럼 상태 변경 없음"
+
+
+def dump_gap_line(gap: str) -> str:
+    return f"🔍 보완할 점: {gap}"
+
+
+def dump_next_concepts(names: list[str]) -> str:
+    return "➡️ 다음 학습 추천: " + (", ".join(names) if names else "없음")
+
+
 def feedback_lines(
     corrections: list[str],
     missing: list[str],

@@ -123,11 +123,14 @@ def test_t2_dump_evaluates_filters_hallucinations_and_updates_progress(tmp_path)
     fllm.set(
         "t2_dump",
         {
+            "summary": "소유권은 잘 설명했고 빌림은 부분적으로 이해했습니다.",
             "assessments": [
                 {"concept_id": 2, "state": "understood", "evidence": "소유권 확실히 앎"},
                 {"concept_id": 3, "state": "partial", "evidence": "빌림 조금 앎"},
+                {"concept_id": 4, "state": "understood", "evidence": "라이프타임 설명 근거"},
                 {"concept_id": 9999, "state": "understood", "evidence": "환각 ID"},
             ],
+            "issues": [],
             "gap_summary": ["라이프타임 보충 필요"],
             "next_concepts": [4],
         },
@@ -135,18 +138,45 @@ def test_t2_dump_evaluates_filters_hallucinations_and_updates_progress(tmp_path)
     res = run_pipeline(conn, settings, client, llm, run_date="2026-11-12")
     assert res.status == "ok"
     assert res.stats["dumps"]["processed"] == 1
-    assert res.stats["dumps"]["transitions"] == 2
+    assert res.stats["dumps"]["transitions"] == 3
 
     states = dict(conn.execute("SELECT name, state FROM concept WHERE is_leaf=1").fetchall())
-    assert states == {"소유권": "understood", "빌림과 참조": "partial", "라이프타임": "unknown"}
+    assert states == {"소유권": "understood", "빌림과 참조": "partial", "라이프타임": "understood"}
+    feedback_node = fk.children(F, dump_nid)[0]
+    feedback_node_id = feedback_node["id"]
+    assert feedback_node["content"] == "🤖 지식 덤프 평가 (2026-11-12) #tutorbot"
+    assert feedback_node["note"].startswith("tb:dump_feedback:")
+    feedback_lines = [c["content"] for c in fk.children(F, feedback_node_id)]
+    assert any("평가 요약:" in line for line in feedback_lines)
+    assert any("소유권" in line and "⬜→✅" in line for line in feedback_lines)
+    assert any("빌림과 참조" in line and "⬜→🟡" in line for line in feedback_lines)
 
-    # Modify dump to remove '빌림과 참조' -> since c3 had only dump events, it drops back to unknown
-    fk.docs[F][dump_nid]["content"] = "#지식덤프 소유권만 알고 빌림은 사실 모른다"
+    # A clearly incorrect claim lowers dump-only progress and updates the same feedback subtree.
+    fk.docs[F][dump_nid]["content"] = (
+        "#지식덤프 #rust 빌림에서는 여러 가변 참조를 동시에 사용할 수 있다."
+    )
     fllm.set(
         "t2_dump",
         {
+            "summary": "빌림에 대한 명확한 오개념이 있습니다.",
             "assessments": [
                 {"concept_id": 2, "state": "understood", "evidence": "소유권만 앎"},
+            ],
+            "issues": [
+                {
+                    "concept_id": 3,
+                    "verdict": "incorrect",
+                    "claim": "여러 가변 참조를 동시에 사용할 수 있다",
+                    "correction": "동일한 시점에는 가변 참조를 하나만 허용한다.",
+                    "reason": "데이터 경합과 별칭 문제를 방지하기 위한 규칙이다.",
+                },
+                {
+                    "concept_id": 4,
+                    "verdict": "uncertain",
+                    "claim": "이 라이프타임 표기가 이 예제에서 유효한지 불확실하다",
+                    "correction": None,
+                    "reason": "주변 코드가 없어 유효성을 판정할 수 없다.",
+                },
             ],
             "gap_summary": ["빌림부터 다시"],
             "next_concepts": [3, 4],
@@ -154,8 +184,23 @@ def test_t2_dump_evaluates_filters_hallucinations_and_updates_progress(tmp_path)
     )
     res2 = run_pipeline(conn, settings, client, llm, run_date="2026-11-12")
     assert res2.status == "ok"
+    assert res2.stats["dumps"]["transitions"] == 1
     states2 = dict(conn.execute("SELECT name, state FROM concept WHERE is_leaf=1").fetchall())
     assert states2["빌림과 참조"] == "unknown"
+    assert states2["라이프타임"] == "understood"
+    feedback_nodes = fk.children(F, dump_nid)
+    assert len(feedback_nodes) == 1
+    assert feedback_nodes[0]["id"] == feedback_node_id
+    feedback_lines2 = [c["content"] for c in fk.children(F, feedback_node_id)]
+    assert any("오개념 (빌림과 참조)" in line for line in feedback_lines2)
+    assert any("✅ 정정:" in line for line in feedback_lines2)
+    assert any("확인 필요 (라이프타임)" in line for line in feedback_lines2)
+    assert any("🟡→⬜" in line for line in feedback_lines2)
+
+    calls_before = len([task for task, _ in fllm.calls if task == "t2_dump"])
+    res3 = run_pipeline(conn, settings, client, llm, run_date="2026-11-12")
+    assert res3.status == "ok"
+    assert len([task for task, _ in fllm.calls if task == "t2_dump"]) == calls_before
 
 
 # ---------------- T3 Study Analysis, In-place Feedback Update & Minor Edit Skip ----------------

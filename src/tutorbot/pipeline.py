@@ -217,6 +217,9 @@ def run_pipeline(
                 run_id=run_id,
                 index_full_threshold=idx_thresh,
                 daily_token_budget=token_budget,
+                indices=indices,
+                run_date=r_date,
+                bot_tag=bot_tag,
             )
             stats["dumps"] = d_st
             if d_st["errors"]:

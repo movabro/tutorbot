@@ -150,7 +150,7 @@ class T1CurriculumOut:
 @dataclass
 class DumpAssessmentItem:
     concept_id: int
-    state: str  # partial | understood
+    state: str  # unknown | partial | understood
     evidence: str
 
     @classmethod
@@ -162,15 +162,46 @@ class DumpAssessmentItem:
         except (KeyError, TypeError, ValueError) as e:
             raise SchemaValidationError("assessment.concept_id must be int") from e
         state = str(d.get("state") or "").strip()
-        if state not in ("partial", "understood"):
-            raise SchemaValidationError(f"assessment.state must be partial|understood, got {state!r}")
-        ev = str(d.get("evidence") or "").strip()[:60]
+        if state not in ("unknown", "partial", "understood"):
+            raise SchemaValidationError(f"assessment.state must be unknown|partial|understood, got {state!r}")
+        ev = str(d.get("evidence") or "").strip()[:100]
         return cls(concept_id=cid, state=state, evidence=ev)
 
 
 @dataclass
+class DumpIssueItem:
+    concept_id: int
+    verdict: str  # incorrect | uncertain
+    claim: str
+    correction: str
+    reason: str
+
+    @classmethod
+    def validate(cls, d: Any) -> "DumpIssueItem":
+        if not isinstance(d, dict):
+            raise SchemaValidationError("issue item must be an object")
+        try:
+            cid = int(d["concept_id"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise SchemaValidationError("issue.concept_id must be int") from e
+        verdict = str(d.get("verdict") or "").strip()
+        if verdict not in ("incorrect", "uncertain"):
+            raise SchemaValidationError(f"issue.verdict must be incorrect|uncertain, got {verdict!r}")
+        claim = str(d.get("claim") or "").strip()[:160]
+        correction = str(d.get("correction") or "").strip()[:180]
+        reason = str(d.get("reason") or "").strip()[:160]
+        if not claim or not reason:
+            raise SchemaValidationError("issue claim and reason must be non-empty")
+        if verdict == "incorrect" and not correction:
+            raise SchemaValidationError("incorrect issue must include a correction")
+        return cls(concept_id=cid, verdict=verdict, claim=claim, correction=correction, reason=reason)
+
+
+@dataclass
 class T2DumpOut:
+    summary: str
     assessments: list[DumpAssessmentItem] = field(default_factory=list)
+    issues: list[DumpIssueItem] = field(default_factory=list)
     gap_summary: list[str] = field(default_factory=list)
     next_concepts: list[int] = field(default_factory=list)
 
@@ -178,14 +209,23 @@ class T2DumpOut:
     def validate(cls, data: Any) -> "T2DumpOut":
         if not isinstance(data, dict):
             raise SchemaValidationError("T2 root must be a JSON object")
+        summary = str(data.get("summary") or "").strip()[:240]
+        if not summary:
+            raise SchemaValidationError("T2 summary must be non-empty")
         raw_ass = data.get("assessments")
         if raw_ass is None or not isinstance(raw_ass, list):
             raise SchemaValidationError("T2 assessments must be a list")
         assessments = [DumpAssessmentItem.validate(x) for x in raw_ass]
+        raw_issues = data.get("issues")
+        if raw_issues is None or not isinstance(raw_issues, list):
+            raise SchemaValidationError("T2 issues must be a list")
+        if len(raw_issues) > 10:
+            raise SchemaValidationError("T2 issues must contain at most 10 items")
+        issues = [DumpIssueItem.validate(x) for x in raw_issues]
         raw_gap = data.get("gap_summary") or []
         if not isinstance(raw_gap, list):
             raise SchemaValidationError("T2 gap_summary must be a list")
-        gap_summary = [str(g).strip() for g in raw_gap if str(g).strip()][:5]
+        gap_summary = [str(g).strip()[:120] for g in raw_gap if str(g).strip()][:5]
         raw_next = data.get("next_concepts") or []
         if not isinstance(raw_next, list):
             raise SchemaValidationError("T2 next_concepts must be a list")
@@ -195,7 +235,13 @@ class T2DumpOut:
                 next_concepts.append(int(x))
             except (TypeError, ValueError):
                 continue
-        return cls(assessments=assessments, gap_summary=gap_summary, next_concepts=next_concepts[:5])
+        return cls(
+            summary=summary,
+            assessments=assessments,
+            issues=issues,
+            gap_summary=gap_summary,
+            next_concepts=next_concepts[:5],
+        )
 
 
 # ---------------- T3 Study Analysis (Mapping + Feedback + Cards) ----------------

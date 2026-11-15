@@ -14,6 +14,7 @@ from .dynalist.client import DynalistClient
 from .dynalist.tree import NodeIndex
 from .dynalist.writer import WriteReport, enqueue_op, flush_outbox
 from .engine.dumps import process_dumps
+from .engine.domains import process_domains
 from .engine.goals import process_goals
 from .engine.progress import update_progress
 from .engine.quiz import expire_attempts, grade_open_attempts, issue_daily_quizzes
@@ -123,7 +124,27 @@ def run_pipeline(
     tz_name = getattr(settings, "timezone", "Asia/Seoul")
     r_date = run_date or clock.local_date(tz_name).isoformat()
     bot_tag = getattr(getattr(settings, "tags", None), "bot", "tutorbot")
-    file_ids: list[str] = list(getattr(getattr(settings, "dynalist", None), "file_ids", []))
+    legacy_file_ids: list[str] = list(getattr(getattr(settings, "dynalist", None), "file_ids", []))
+    profiles = getattr(settings, "domains", {})
+    study_profile = profiles.get("study") if isinstance(profiles, dict) else None
+    configured_study_ids = list(getattr(study_profile, "file_ids", []))
+    study_file_ids = (
+        list(dict.fromkeys([*legacy_file_ids, *configured_study_ids]))
+        if getattr(study_profile, "enabled", True)
+        else []
+    )
+    file_ids = list(study_file_ids)
+    if isinstance(profiles, dict):
+        for domain_id, profile in profiles.items():
+            if domain_id == "study" or not getattr(profile, "enabled", False):
+                continue
+            file_ids.extend(getattr(profile, "file_ids", []))
+            if domain_id == "career":
+                for source_domain in getattr(profile, "source_domains", []):
+                    source_profile = profiles.get(source_domain)
+                    if source_profile is not None and getattr(source_profile, "enabled", False):
+                        file_ids.extend(getattr(source_profile, "file_ids", []))
+    file_ids = list(dict.fromkeys(file_ids))
 
     lpath = lock_path or (Path(getattr(settings, "db_path", "data/tutorbot.sqlite3")).parent / "tutorbot.lock")
     with FileLock(lpath):
@@ -161,6 +182,7 @@ def run_pipeline(
                 indices[fid] = NodeIndex.from_doc_read(fid, dynalist.doc_read(fid))
             except Exception as e:
                 errors.append(f"doc_read({fid}) failed: {e}")
+        study_indices = {fid: indices[fid] for fid in study_file_ids if fid in indices}
 
         if file_ids and not indices:
             # All documents failed to read -> run=failed
@@ -173,7 +195,7 @@ def run_pipeline(
 
         # Stages 3 & 4: Registry reconciliation + Parsing/Ingest
         ingest_rep = ingest.IngestReport()
-        for fid, idx_obj in indices.items():
+        for fid, idx_obj in study_indices.items():
             conn.execute("BEGIN")
             try:
                 before_w = len(ingest_rep.warnings)
@@ -188,7 +210,7 @@ def run_pipeline(
         stats["ingest"] = ingest_rep.summary()
 
         # Stage 5: Goals & Curriculum (T1)
-        goal_stats = process_goals(conn, indices, llm, r_date, run_id=run_id, bot_tag=bot_tag)
+        goal_stats = process_goals(conn, study_indices, llm, r_date, run_id=run_id, bot_tag=bot_tag)
         stats["goals"] = goal_stats
         if goal_stats["errors"]:
             errors.append(f"goal curriculum errors: {goal_stats['errors']}")
@@ -201,7 +223,7 @@ def run_pipeline(
 
         def _run_quiz_stages() -> tuple[dict, dict, dict]:
             g_st = grade_open_attempts(conn, llm, settings, r_date, run_id=run_id)
-            e_st = expire_attempts(conn, indices, r_date, run_id=run_id)
+            e_st = expire_attempts(conn, study_indices, r_date, run_id=run_id)
             i_st = issue_daily_quizzes(conn, settings, r_date, run_id=run_id)
             stats["quiz_grade"] = g_st
             stats["quiz_expire"] = e_st
@@ -217,7 +239,7 @@ def run_pipeline(
                 run_id=run_id,
                 index_full_threshold=idx_thresh,
                 daily_token_budget=token_budget,
-                indices=indices,
+                indices=study_indices,
                 run_date=r_date,
                 bot_tag=bot_tag,
             )
@@ -225,7 +247,7 @@ def run_pipeline(
             if d_st["errors"]:
                 errors.append(f"dump evaluation errors: {d_st['errors']}")
 
-            s_st = process_study_entries(conn, indices, llm, settings, r_date, run_id=run_id)
+            s_st = process_study_entries(conn, study_indices, llm, settings, r_date, run_id=run_id)
             stats["study"] = s_st
             if s_st["errors"]:
                 errors.append(f"study entry errors: {s_st['errors']}")
@@ -240,7 +262,7 @@ def run_pipeline(
             grade_stats, _, _ = _run_quiz_stages()
 
         # Stage 11: Progress update (concept node rendering, curriculum_root title, progress_report)
-        prog_stats = update_progress(conn, indices, r_date, run_id=run_id, bot_tag=bot_tag)
+        prog_stats = update_progress(conn, study_indices, r_date, run_id=run_id, bot_tag=bot_tag)
         stats["progress"] = prog_stats
 
         # Stage 12: Weekly report (T5) & Learner profile update (T6)
@@ -255,6 +277,21 @@ def run_pipeline(
         stats["weekly"] = weekly_stats
         if weekly_stats["errors"]:
             errors.append(f"weekly report errors: {weekly_stats['errors']}")
+
+        domain_stats = {"processed": 0, "skipped": 0, "warnings": 0, "errors": 0}
+        has_configured_domains = isinstance(profiles, dict) and any(
+            domain_id != "study"
+            and getattr(profile, "enabled", False)
+            and getattr(profile, "file_ids", [])
+            for domain_id, profile in profiles.items()
+        )
+        if has_configured_domains:
+            domain_report = process_domains(
+                conn, indices, settings, llm, run_id=run_id, bot_tag=bot_tag,
+            )
+            domain_stats = domain_report.summary()
+            stats["domains"] = domain_stats
+            errors.extend(domain_report.errors)
 
         # Stage 13: Write (Outbox execution)
         if dry_run:
@@ -282,6 +319,7 @@ def run_pipeline(
             or study_stats["errors"] > 0
             or grade_stats["errors"] > 0
             or weekly_stats["errors"] > 0
+            or domain_stats["errors"] > 0
             or pre_flush.skipped > 0
             or pre_flush.failed > 0
             or write_rep.skipped > 0

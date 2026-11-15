@@ -67,6 +67,35 @@ model_fast = "<사용할 Gemini 모델>"
 tutorbot -c config.toml doctor
 ```
 
+### 도메인 프로필 (선택)
+
+기존 `[dynalist].file_ids` 설정은 그대로 학습 문서로 처리됩니다. 다른 문서를 도메인별로 사용하려면 `config.toml`에 프로필을 추가합니다. 예를 들어:
+
+```toml
+[domains.work]
+file_ids = ["<업무 문서 ID>"]
+
+[domains.life]
+file_ids = ["<일상 문서 ID>"]
+
+[domains.career]
+file_ids = ["<커리어 피드백 문서 ID>"]
+source_domains = ["work", "life"]
+
+[domains.personal_tasks]
+file_ids = ["<개인 과업 문서 ID>"]
+tracking_tag = "Track"
+status_nodes = ["Backlog", "InProgress", "FastTrack", "Completed", "Abandon"]
+```
+
+각 도메인의 입력과 피드백은 해당 프로필의 `file_ids` 문서에 한정됩니다. 커리어 프로필은 `source_domains`로 지정한 업무·일상 문서만 읽고, 결과는 커리어 프로필 문서에 기록합니다. 비밀 토큰은 기존과 같이 환경 변수에서만 읽습니다.
+
+프로필별 `rules`와 `prompt`로 추가 분석 지침을 지정할 수 있습니다. 출력 형식은 현재 `feedback_json`만 지원합니다. 개인 과업의 `tracking_tag_aliases`로 `#Track` 외에 인식할 태그를 추가할 수 있습니다.
+
+개인 과업은 `Backlog`, `InProgress`, `FastTrack`, `Completed`, `Abandon` 중 하나의 상태 노드 아래에 두고, 실제 추적 항목 본문에 명시적으로 `#Track`을 붙입니다. 분류용 부모 노드에는 태그를 붙이지 않습니다. 진행 기록은 추적 항목의 직접 자식으로 두고 `!(yyyy-mm-dd)` 날짜를 기록합니다. 노트와 모든 자손은 해당 진행 기록의 상세 내용으로 읽힙니다. 날짜가 누락되거나 유효하지 않으면 날짜 집계에서 제외되며, Tutorbot은 날짜를 추측하지 않습니다. 완료 이벤트는 SQLite에 저장되며, 처음 발견했을 때 실제 완료 시점을 알 수 없으면 그 시점은 비워 둡니다.
+
+1단계 구현은 도메인별 분석 피드백과 완료 이벤트 저장까지 지원합니다. 신규 통합 리포트, PDF, 텔레그램 및 슬랙 연동은 포함하지 않습니다.
+
 ## 3. Dynalist 문서에 학습 내용 작성하기
 
 ### 먼저 알아둘 용어

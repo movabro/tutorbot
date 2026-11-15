@@ -23,7 +23,7 @@ tutorbot = "tutorbot.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-tutorbot = ["db/*.sql", "db/migrations/*.sql"]
+tutorbot = ["db/*.sql", "db/migrations/*.sql", "llm/prompts/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]

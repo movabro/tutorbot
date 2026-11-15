@@ -35,3 +35,24 @@ index_full_threshold = 150
 
 [logging]
 log_file = "logs/tutorbot.log"
+
+# Optional non-study domain profiles. Configure each profile's document IDs to enable it.
+# Career reads only the documents belonging to the configured source_domains and writes
+# its feedback to its own file_ids.
+# [domains.work]
+# file_ids = ["<work document id>"]
+#
+# [domains.life]
+# file_ids = ["<life document id>"]
+#
+# [domains.career]
+# file_ids = ["<career document id>"]
+# source_domains = ["work", "life"]
+#
+# [domains.personal_tasks]
+# file_ids = ["<personal tasks document id>"]
+# tracking_tag = "Track"
+# tracking_tag_aliases = ["추적"]
+# status_nodes = ["Backlog", "InProgress", "FastTrack", "Completed", "Abandon"]
+# rules = ["Keep feedback short and evidence-based."]
+# output_format = "feedback_json"

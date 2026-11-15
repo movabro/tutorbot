@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +78,12 @@ def _simple_toml_parse(text: str) -> dict[str, Any]:
             continue
         if line.startswith("[") and line.endswith("]"):
             sec = line[1:-1].strip()
-            cur = root.setdefault(sec, {})
+            cur = root
+            for name in sec.split("."):
+                child = cur.setdefault(name, {})
+                if not isinstance(child, dict):
+                    raise ValueError(f"TOML table conflicts with a value: {sec}")
+                cur = child
             continue
         if "=" in line:
             k, v = line.split("=", 1)
@@ -134,6 +139,31 @@ class LoggingCfg:
 
 
 @dataclass
+class DomainProfileCfg:
+    enabled: bool = True
+    file_ids: list[str] = field(default_factory=list)
+    source_domains: list[str] = field(default_factory=list)
+    tracking_tag: str = "Track"
+    tracking_tag_aliases: list[str] = field(default_factory=list)
+    rules: list[str] = field(default_factory=list)
+    prompt: str = ""
+    output_format: str = "feedback_json"
+    status_nodes: list[str] = field(default_factory=lambda: [
+        "Backlog", "InProgress", "FastTrack", "Completed", "Abandon",
+    ])
+
+
+def _default_domains() -> dict[str, DomainProfileCfg]:
+    return {
+        "study": DomainProfileCfg(),
+        "work": DomainProfileCfg(),
+        "life": DomainProfileCfg(),
+        "career": DomainProfileCfg(source_domains=["work", "life"]),
+        "personal_tasks": DomainProfileCfg(),
+    }
+
+
+@dataclass
 class Settings:
     timezone: str = "Asia/Seoul"
     db_path: str = "data/tutorbot.sqlite3"
@@ -143,9 +173,28 @@ class Settings:
     processing: ProcessingCfg = field(default_factory=ProcessingCfg)
     llm: LLMCfg = field(default_factory=LLMCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
+    domains: dict[str, DomainProfileCfg] = field(default_factory=_default_domains)
 
     @classmethod
     def model_validate(cls, d: dict[str, Any]) -> "Settings":
+        domains = _default_domains()
+        for name, profile in d.get("domains", {}).items():
+            if name not in domains:
+                raise ValueError(f"unknown domain profile: {name}")
+            domains[name] = replace(domains[name], **profile)
+        for source_domain in domains["career"].source_domains:
+            if source_domain not in {"work", "life"}:
+                raise ValueError(f"invalid career source domain: {source_domain}")
+        allowed_statuses = {"Backlog", "InProgress", "FastTrack", "Completed", "Abandon"}
+        if set(domains["personal_tasks"].status_nodes) != allowed_statuses:
+            raise ValueError("personal_tasks.status_nodes must contain the five supported PascalCase states")
+        if not domains["personal_tasks"].tracking_tag.strip():
+            raise ValueError("personal_tasks.tracking_tag must not be empty")
+        for name, profile in domains.items():
+            if profile.output_format != "feedback_json":
+                raise ValueError(f"{name}.output_format must be 'feedback_json'")
+            if any(not tag.strip() for tag in profile.tracking_tag_aliases):
+                raise ValueError(f"{name}.tracking_tag_aliases must not contain empty tags")
         return cls(
             timezone=d.get("timezone", "Asia/Seoul"),
             db_path=d.get("db_path", "data/tutorbot.sqlite3"),
@@ -155,6 +204,7 @@ class Settings:
             processing=ProcessingCfg(**d.get("processing", {})),
             llm=LLMCfg(**d.get("llm", {})),
             logging=LoggingCfg(**d.get("logging", {})),
+            domains=domains,
         )
 
     def dynalist_token(self) -> str:

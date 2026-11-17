@@ -7,6 +7,6 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/home/movabro/Documents/tutor_ws
 EnvironmentFile=-/home/movabro/Documents/tutor_ws/.env
-ExecStart=/usr/bin/python3 /home/movabro/Documents/tutor_ws/run_tutorbot.py run -c /home/movabro/Documents/tutor_ws/config.toml
+ExecStart=/usr/bin/python3 /home/movabro/Documents/tutor_ws/run_tutorbot.py -c /home/movabro/Documents/tutor_ws/config.toml run
 StandardOutput=journal
 StandardError=journal

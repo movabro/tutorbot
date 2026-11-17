@@ -29,13 +29,12 @@ def load_dotenv(path: str | Path = ".env") -> None:
 def _parse_toml_bytes(data: bytes) -> dict[str, Any]:
     try:
         import tomllib as _toml  # type: ignore[import-not-found]
-        return _toml.loads(data.decode("utf-8"))
     except ModuleNotFoundError:
         try:
             import tomli as _toml  # type: ignore[import-not-found]
-            return _toml.loads(data.decode("utf-8"))
         except ModuleNotFoundError:
             return _simple_toml_parse(data.decode("utf-8"))
+    return _toml.loads(data.decode("utf-8"))
 
 
 def _strip_inline_comment(s: str) -> str:
@@ -142,6 +141,7 @@ class LoggingCfg:
 class DomainProfileCfg:
     enabled: bool = True
     file_ids: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     source_domains: list[str] = field(default_factory=list)
     tracking_tag: str = "Track"
     tracking_tag_aliases: list[str] = field(default_factory=list)
@@ -193,6 +193,8 @@ class Settings:
         for name, profile in domains.items():
             if profile.output_format != "feedback_json":
                 raise ValueError(f"{name}.output_format must be 'feedback_json'")
+            if any(not tag.strip() for tag in profile.tags):
+                raise ValueError(f"{name}.tags must not contain empty tags")
             if any(not tag.strip() for tag in profile.tracking_tag_aliases):
                 raise ValueError(f"{name}.tracking_tag_aliases must not contain empty tags")
         return cls(

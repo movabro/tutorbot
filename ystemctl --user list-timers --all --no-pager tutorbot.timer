@@ -1,0 +1,16 @@
+[0;1;34m# /home/movabro/.config/systemd/user/tutorbot.timer[0m
+[Unit]
+Description=Run TutorBot Daily at 04:00 Asia/Seoul
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Asia/Seoul
+Persistent=true
+Unit=tutorbot.service
+
+[Install]
+WantedBy=timers.target
+
+[0;1;34m# /home/movabro/.config/systemd/user/tutorbot.timer.d/override.conf[0m
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* 00,04,08,12,16,20:00:00 Asia/Seoul

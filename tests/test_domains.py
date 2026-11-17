@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from tutorbot.config import Settings, load_settings
+import pytest
+
+from tutorbot.config import Settings, _parse_toml_bytes, load_settings
 from tutorbot.db import connect, migrate
 from tutorbot.dynalist.tree import NodeIndex
 from tutorbot.engine.domains import _personal_tasks, process_domains
@@ -13,6 +16,16 @@ from tutorbot.pipeline import run_pipeline
 from tests.fakes import FakeDynalist
 
 
+def test_toml_decode_error_is_not_chained_to_parser_fallback():
+    if sys.version_info < (3, 11):
+        pytest.importorskip("tomli")
+
+    with pytest.raises(ValueError) as error:
+        _parse_toml_bytes(b"invalid = [unquoted]")
+
+    assert error.value.__context__ is None
+
+
 def _index(fake: FakeDynalist, file_id: str) -> NodeIndex:
     return NodeIndex.from_doc_read(file_id, fake._doc_read({"file_id": file_id}))
 
@@ -21,7 +34,7 @@ def test_domain_settings_preserve_legacy_learning_defaults(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(
         '[dynalist]\nfile_ids = ["study-doc"]\n'
-        '[domains.work]\nfile_ids = ["work-doc"]\n'
+        '[domains.work]\nfile_ids = ["work-doc"]\ntags = ["project"]\n'
         '[domains.career]\nfile_ids = ["career-doc"]\n'
         '[domains.personal_tasks]\ntracking_tag_aliases = ["Task"]\n',
         encoding="utf-8",
@@ -31,6 +44,7 @@ def test_domain_settings_preserve_legacy_learning_defaults(tmp_path):
     assert settings.dynalist.file_ids == ["study-doc"]
     assert settings.domains["study"].file_ids == []
     assert settings.domains["work"].file_ids == ["work-doc"]
+    assert settings.domains["work"].tags == ["project"]
     assert settings.domains["career"].source_domains == ["work", "life"]
     assert settings.domains["personal_tasks"].tracking_tag == "Track"
     assert settings.domains["personal_tasks"].tracking_tag_aliases == ["Task"]
@@ -260,6 +274,7 @@ def test_career_uses_only_configured_sources_and_writes_its_own_document():
     settings.domains["life"].enabled = False
     settings.domains["career"].file_ids = ["career-doc"]
     settings.domains["career"].source_domains = ["work"]
+    settings.domains["career"].tags = ["career", "#direction"]
     settings.domains["career"].rules = ["기록의 근거를 한 가지 이상 명시한다."]
     settings.domains["career"].prompt = "추가 사용자 지침"
     conn = connect(":memory:")
@@ -284,6 +299,7 @@ def test_career_uses_only_configured_sources_and_writes_its_own_document():
     assert "업무 목표에 맞춰" in career_user_text
     assert "가족 일정" not in career_user_text
     assert "추가 사용자 지침" in career_message[0]["content"]
+    assert "프로필 관련 태그: #career, #direction" in career_message[0]["content"]
     assert career_op["file_id"] == "career-doc"
     assert first.processed == 2
     assert second.skipped == 2

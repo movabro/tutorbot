@@ -214,6 +214,9 @@ def _messages(
     if not prompt.strip():
         raise RuntimeError("domain_feedback prompt is missing or empty")
     additions = [*profile.rules]
+    if profile.tags:
+        tags = ", ".join(f"#{tag.lstrip('#')}" for tag in profile.tags)
+        additions.append(f"프로필 관련 태그: {tags}")
     if profile.prompt.strip():
         additions.append(profile.prompt.strip())
     if additions:

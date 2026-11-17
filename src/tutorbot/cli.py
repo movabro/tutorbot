@@ -18,8 +18,8 @@ from .llm.client import LLMClient
 from .pipeline import run_pipeline
 
 
-def _configure_logging(settings) -> Path:
-    log_path = Path(settings.logging.log_file)
+def _configure_logging(settings=None) -> Path:
+    log_path = Path(settings.logging.log_file) if settings else Path("logs/tutorbot.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     app_logger = logging.getLogger("tutorbot")
@@ -84,6 +84,12 @@ class _DefaultFakeLLMBackend:
             return {"summary": "주간 학습 요약입니다.", "weak_points": [], "next_week": ["복습 진행"]}
         if task == "t6_profile":
             return {"summary": "꾸준히 학습 중입니다."}
+        if task == "domain_feedback":
+            return {
+                "summary": "기록을 검토했습니다.",
+                "feedback": [],
+                "evidence": [],
+            }
         return {}
 
 
@@ -238,6 +244,13 @@ def cmd_stats(args, settings) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    command_line = list(sys.argv[1:] if argv is None else argv)
+    is_run_invocation = "run" in command_line
+    logger = logging.getLogger(__name__)
+    if is_run_invocation:
+        _configure_logging()
+        logger.info("CLI invocation started")
+
     p = argparse.ArgumentParser(prog="tutorbot")
     p.add_argument("-c", "--config", default="config.toml")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -249,8 +262,20 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--date")
     r.add_argument("--fake-llm", action="store_true")
     sub.add_parser("stats")
-    args = p.parse_args(argv)
-    settings = load_settings(args.config if Path(args.config).exists() else None)
+    try:
+        args = p.parse_args(command_line)
+    except SystemExit as exc:
+        if is_run_invocation and exc.code != 0:
+            logger.error("Command argument parsing failed: exit_code=%s", exc.code)
+        raise
+    if is_run_invocation:
+        logger.info("Command started: %s", args.cmd)
+    try:
+        settings = load_settings(args.config if Path(args.config).exists() else None)
+    except (OSError, ValueError, TypeError):
+        if is_run_invocation:
+            logger.exception("Command initialization failed")
+        raise
     return {
         "init-db": cmd_init_db,
         "doctor": cmd_doctor,

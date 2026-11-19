@@ -130,6 +130,11 @@ class LLMCfg:
     model_fast: str = "gemini-3.5-flash-lite"
     daily_token_budget: int = 300000
     index_full_threshold: int = 150
+    requests_per_minute: int = 10
+
+    def __post_init__(self) -> None:
+        if type(self.requests_per_minute) is not int or self.requests_per_minute <= 0:
+            raise ValueError("llm.requests_per_minute must be a positive integer")
 
 
 @dataclass

@@ -40,8 +40,8 @@ def make_settings(tmp_path, daily_token_budget=300000):
         ),
         llm=SimpleNamespace(
             provider="gemini",
-            model_smart="gemini-3.8-flash",
-            model_fast="gemini-3.8-flash",
+            model_smart="gemini-3.5-flash-lite",
+            model_fast="gemini-3.5-flash-lite",
             index_full_threshold=150,
             daily_token_budget=daily_token_budget,
         ),

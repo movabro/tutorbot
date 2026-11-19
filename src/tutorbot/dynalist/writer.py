@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -20,6 +21,8 @@ from .client import (
     ch_insert,
 )
 from .tree import NodeIndex
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -293,6 +296,7 @@ def flush_outbox(
                         _apply_domain_done(conn, op, existing_nid, now_iso)
                         rep.reconciled += 1
                         rep.done += 1
+                        logger.info("Dynalist reconcile succeeded file_id=%s action=%s op_key=%s result_node_id=%s", fid, op["action"], op["op_key"], existing_nid)
                         progressed = True
                         continue
 
@@ -327,6 +331,8 @@ def flush_outbox(
                         conn.execute("UPDATE write_op SET status='failed', last_error=? WHERE id=?", (str(e), oid))
                     conn.execute("COMMIT")
                     rep.errors.append(str(e))
+                    for op, _, tid in chunk:
+                        logger.warning("Dynalist write failed file_id=%s action=%s op_key=%s target_id=%s error=Dynalist request failed", fid, op["action"], op["op_key"], tid)
                     aborted_files.add(fid)
                     break
                 except NodeNotFound as e:
@@ -336,6 +342,8 @@ def flush_outbox(
                     for oid in op_ids:
                         conn.execute("UPDATE write_op SET status='failed', last_error=? WHERE id=?", (str(e), oid))
                     conn.execute("COMMIT")
+                    for op, _, tid in chunk:
+                        logger.warning("Dynalist write failed file_id=%s action=%s op_key=%s target_id=%s error=Dynalist request failed", fid, op["action"], op["op_key"], tid)
                     progressed = True
                     break
                 except RetryableError as e:
@@ -347,6 +355,8 @@ def flush_outbox(
                         )
                     conn.execute("COMMIT")
                     rep.errors.append(str(e))
+                    for op, _, tid in chunk:
+                        logger.warning("Dynalist write failed file_id=%s action=%s op_key=%s target_id=%s error=Dynalist request failed", fid, op["action"], op["op_key"], tid)
                     progressed = True
                     break
                 except Exception as e:
@@ -359,6 +369,8 @@ def flush_outbox(
                     conn.execute("COMMIT")
                     rep.failed += len(op_ids)
                     rep.errors.append(str(e))
+                    for op, _, tid in chunk:
+                        logger.warning("Dynalist write failed file_id=%s action=%s op_key=%s target_id=%s error=Dynalist request failed", fid, op["action"], op["op_key"], tid)
                     progressed = True
                     break
 
@@ -375,6 +387,11 @@ def flush_outbox(
                         _apply_domain_done(conn, op, res_id, now_iso)
                         rep.done += 1
                     conn.execute("COMMIT")
+                    for (op, _, tid), _change in zip(chunk, changes):
+                        result_id = tid if op["action"] != "insert" else conn.execute(
+                            "SELECT result_node_id FROM write_op WHERE id=?", (op["id"],)
+                        ).fetchone()["result_node_id"]
+                        logger.info("Dynalist write succeeded file_id=%s action=%s op_key=%s result_node_id=%s", fid, op["action"], op["op_key"], result_id)
                 except Exception:
                     conn.execute("ROLLBACK")
                     raise

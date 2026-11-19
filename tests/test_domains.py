@@ -2,18 +2,39 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import logging
 
 import pytest
 
 from tutorbot.config import Settings, _parse_toml_bytes, load_settings
 from tutorbot.db import connect, migrate
 from tutorbot.dynalist.tree import NodeIndex
-from tutorbot.engine.domains import _personal_tasks, process_domains
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from tutorbot.engine.domains import _life_incremental_text, _personal_tasks, process_domains
 from tutorbot.llm.client import LLMClient
 from tutorbot.parse.personal_tasks import parse_tracked_tasks
 from tutorbot.dynalist.client import DynalistClient
 from tutorbot.pipeline import run_pipeline
 from tests.fakes import FakeDynalist
+
+
+def test_source_read_failure_logs_failed_source_and_target(caplog):
+    settings = Settings()
+    settings.domains["work"].file_ids = ["work-target"]
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-15','now','running')"
+    ).lastrowid
+
+    with caplog.at_level(logging.WARNING, logger="tutorbot.engine.domains"):
+        process_domains(conn, {}, settings, object(), run_id=run_id)
+
+    assert "failed_source_ids=['work-target']" in caplog.text
+    assert "target_id=work-target" in caplog.text
+    assert "domain analysis succeeded" not in caplog.text
 
 
 def test_toml_decode_error_is_not_chained_to_parser_fallback():
@@ -163,7 +184,7 @@ def test_domain_analysis_retries_same_hash_after_error():
 
     first = process_domains(conn, indices, settings, llm, run_id=run_id)
     backend.fail = False
-    second = process_domains(conn, indices, settings, llm, run_id=run_id)
+    second = process_domains(conn, indices, settings, llm, run_id=run_id, run_date="2026-11-15")
     third = process_domains(conn, indices, settings, llm, run_id=run_id)
 
     assert first.errors
@@ -250,7 +271,7 @@ def test_completion_events_are_idempotent_and_record_recompletion():
     assert events[1]["completed_at"] is not None
 
 
-def test_career_uses_only_configured_sources_and_writes_its_own_document():
+def test_career_uses_only_configured_sources_and_writes_its_own_document(caplog):
     class Backend:
         def __init__(self):
             self.messages = []
@@ -264,16 +285,16 @@ def test_career_uses_only_configured_sources_and_writes_its_own_document():
     fake.add_doc("life-doc")
     fake.add_doc("career-doc")
     fake.add("work-doc", "root", "업무 목표에 맞춰 보고 자동화를 진행했다")
-    fake.add("life-doc", "root", "가족 일정에 참석했다")
+    recent = int(datetime(2026, 11, 14, 15, tzinfo=ZoneInfo("UTC")).timestamp() * 1000)
+    fake.add("life-doc", "root", "가족 일정에 참석했다", created=recent, modified=recent)
     fake.add("career-doc", "root", "커리어 방향 관찰")
     indices = {fid: _index(fake, fid) for fid in fake.docs}
 
     settings = Settings()
     settings.domains["work"].file_ids = ["work-doc"]
     settings.domains["life"].file_ids = ["life-doc"]
-    settings.domains["life"].enabled = False
     settings.domains["career"].file_ids = ["career-doc"]
-    settings.domains["career"].source_domains = ["work"]
+    settings.domains["career"].source_domains = ["work", "life"]
     settings.domains["career"].tags = ["career", "#direction"]
     settings.domains["career"].rules = ["기록의 근거를 한 가지 이상 명시한다."]
     settings.domains["career"].prompt = "추가 사용자 지침"
@@ -285,8 +306,9 @@ def test_career_uses_only_configured_sources_and_writes_its_own_document():
     backend = Backend()
     llm = LLMClient(backend=backend, conn=conn, run_id=run_id)
 
-    first = process_domains(conn, indices, settings, llm, run_id=run_id)
-    second = process_domains(conn, indices, settings, llm, run_id=run_id)
+    with caplog.at_level("INFO", logger="tutorbot.engine.domains"):
+        first = process_domains(conn, indices, settings, llm, run_id=run_id, run_date="2026-11-15")
+    second = process_domains(conn, indices, settings, llm, run_id=run_id, run_date="2026-11-15")
 
     career_message = next(
         messages for task, messages in backend.messages
@@ -297,12 +319,274 @@ def test_career_uses_only_configured_sources_and_writes_its_own_document():
         "SELECT file_id FROM write_op WHERE op_key LIKE 'domain-feedback:career:%'"
     ).fetchone()
     assert "업무 목표에 맞춰" in career_user_text
-    assert "가족 일정" not in career_user_text
+    assert "가족 일정에 참석했다" in career_user_text
     assert "추가 사용자 지침" in career_message[0]["content"]
     assert "프로필 관련 태그: #career, #direction" in career_message[0]["content"]
     assert career_op["file_id"] == "career-doc"
-    assert first.processed == 2
-    assert second.skipped == 2
+    payload = conn.execute("SELECT payload_json FROM write_op WHERE file_id='career-doc'").fetchone()
+    assert "!(2026-11-15)" in payload["payload_json"]
+    assert "source_ids=['work-doc', 'life-doc']" in caplog.text
+    assert "target_id=career-doc" in caplog.text
+    assert "domain analysis succeeded" in caplog.text
+    assert (
+        "life source domain_id=career source_id=life-doc target_id=career-doc "
+        "cutoff=2026-11-14T00:00:00+09:00 changed_nodes=1 result=succeeded"
+    ) in caplog.text
+    assert "업무 목표에 맞춰 보고 자동화를 진행했다" not in caplog.text
+    assert "가족 일정에 참석했다" not in caplog.text
+    assert "프로필 관련 태그" not in caplog.text
+    assert "private source record" not in caplog.text
+    assert "요약" not in caplog.text
+    assert first.processed == 3
+    assert second.skipped == 3
+
+
+def test_career_uses_work_when_life_has_no_recent_changes_and_warns(caplog):
+    class Backend:
+        def __init__(self):
+            self.messages = []
+
+        def complete_json(self, task, messages, schema):
+            self.messages.append((task, messages))
+            return {"summary": "요약", "feedback": [], "evidence": []}
+
+    fake = FakeDynalist()
+    for file_id in ("work-doc", "life-doc", "career-doc"):
+        fake.add_doc(file_id)
+    fake.add("work-doc", "root", "최근 업무 사용자 기록")
+    old = int(datetime(2026, 11, 18, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    fake.add("life-doc", "root", "오래된 생활 기록", created=old, modified=old)
+
+    settings = Settings()
+    settings.domains["work"].file_ids = ["work-doc"]
+    settings.domains["life"].file_ids = ["life-doc"]
+    settings.domains["career"].file_ids = ["career-doc"]
+    settings.domains["career"].source_domains = ["work", "life"]
+    indices = {fid: _index(fake, fid) for fid in fake.docs}
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+    backend = Backend()
+
+    with caplog.at_level(logging.INFO, logger="tutorbot.engine.domains"):
+        report = process_domains(
+            conn, indices, settings, LLMClient(backend=backend, conn=conn, run_id=run_id),
+            run_id=run_id, run_date="2026-11-20",
+        )
+
+    career_message = next(
+        messages for task, messages in backend.messages
+        if task == "domain_feedback" and "도메인: career" in messages[-1]["content"]
+    )
+    career_input = career_message[-1]["content"].split("기록:\n", 1)[1]
+    assert "최근 업무 사용자 기록" in career_input
+    assert "오래된 생활 기록" not in career_input
+    assert any("career/life-doc: no life changes" in warning for warning in report.warnings)
+    assert (
+        "life source domain_id=career source_id=life-doc target_id=career-doc "
+        "cutoff=2026-11-19T00:00:00+09:00 changed_nodes=0 result=skipped"
+    ) in caplog.text
+    assert "domain analysis succeeded domain_id=career" in caplog.text
+    row = conn.execute(
+        "SELECT status,error FROM domain_run WHERE domain_id='career'"
+    ).fetchone()
+    assert row["status"] == "warning"
+    assert "no life changes" in row["error"]
+
+
+def test_old_unrelated_life_record_is_absent_from_input_and_has_no_source_hash(caplog):
+    class NoCallBackend:
+        def complete_json(self, task, messages, schema):
+            raise AssertionError("an old unrelated life record must not call Gemini")
+
+    fake = FakeDynalist()
+    fake.add_doc("life")
+    old = int(datetime(2026, 11, 18, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    fake.add("life", "root", "오래된 비관련 기록", created=old, modified=old)
+    settings = Settings()
+    settings.domains["life"].file_ids = ["life"]
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+
+    with caplog.at_level(logging.INFO, logger="tutorbot.engine.domains"):
+        report = process_domains(
+            conn, {"life": _index(fake, "life")}, settings,
+            LLMClient(backend=NoCallBackend()), run_id=run_id, run_date="2026-11-20",
+        )
+
+    assert report.skipped == 1
+    assert "오래된 비관련 기록" not in str(report)
+    assert (
+        "life source domain_id=life source_id=life target_id=life "
+        "cutoff=2026-11-19T00:00:00+09:00 changed_nodes=0 result=skipped"
+    ) in caplog.text
+    assert (
+        "domain analysis skipped domain_id=life source_ids=[] target_id=life "
+        "reason=no_analyzable_user_records"
+    ) in caplog.text
+    row = conn.execute(
+        "SELECT status,source_hash,error FROM domain_run WHERE domain_id='life'"
+    ).fetchone()
+    assert row["status"] == "warning"
+    assert row["source_hash"] is None
+    assert "no life changes" in row["error"]
+
+
+def test_life_incremental_text_includes_context_and_changed_subtree_only():
+    fake = FakeDynalist()
+    fake.add_doc("life")
+    old = int(datetime(2026, 11, 17, tzinfo=ZoneInfo("UTC")).timestamp() * 1000)
+    recent = int(datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    parent = fake.add("life", "root", "일상", created=old, modified=old)
+    fake.add("life", parent, "오래된 형제", created=old, modified=old)
+    changed = fake.add("life", parent, "최근 기록", created=recent, modified=old)
+    fake.add("life", changed, "하위 내용", created=old, modified=old)
+    cutoff = datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    text = _life_incremental_text(_index(fake, "life"), lambda _: False, cutoff)
+
+    assert "일상" in text
+    assert "최근 기록" in text
+    assert "하위 내용" in text
+    assert "오래된 형제" not in text
+
+
+def test_life_cutoff_is_inclusive_and_modified_timestamp_counts():
+    fake = FakeDynalist()
+    fake.add_doc("life")
+    cutoff_ms = int(datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    before_ms = cutoff_ms - 1
+    fake.add("life", "root", "경계 포함", created=cutoff_ms, modified=0)
+    fake.add("life", "root", "modified 변경", created=before_ms, modified=cutoff_ms)
+    fake.add("life", "root", "경계 직전", created=before_ms, modified=before_ms)
+
+    text = _life_incremental_text(
+        _index(fake, "life"), lambda _: False,
+        datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert "경계 포함" in text
+    assert "modified 변경" in text
+    assert "경계 직전" not in text
+
+
+def test_life_nested_changes_render_minimal_context_once():
+    fake = FakeDynalist()
+    fake.add_doc("life")
+    recent = int(datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    old = recent - 1000
+    parent = fake.add("life", "root", "부모", created=recent, modified=old)
+    child = fake.add("life", parent, "자녀", created=recent, modified=old)
+    fake.add("life", child, "자녀 상세", created=old, modified=old)
+    text = _life_incremental_text(
+        _index(fake, "life"), lambda _: False,
+        datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert text.count("부모") == 1
+    assert sum(line.strip() == "자녀" for line in text.splitlines()) == 1
+    assert text.count("자녀 상세") == 1
+
+
+def test_empty_life_increment_skips_without_gemini_or_empty_hash(caplog):
+    class NoCallBackend:
+        def complete_json(self, task, messages, schema):
+            raise AssertionError("empty life input must not call Gemini")
+
+    fake = FakeDynalist()
+    fake.add_doc("life")
+    fake.add("life", "root", "오래된 기록", created=1, modified=1)
+    settings = Settings()
+    settings.domains["life"].file_ids = ["life"]
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+    caplog.set_level(logging.INFO, logger="tutorbot.engine.domains")
+    report = process_domains(
+        conn, {"life": _index(fake, "life")}, settings,
+        LLMClient(backend=NoCallBackend()), run_id=run_id, run_date="2026-11-20",
+    )
+    assert "target_id=pending" not in caplog.text
+    assert "source_id=life" in caplog.text
+    assert "cutoff=" in caplog.text
+    assert "changed_nodes=0" in caplog.text
+    row = conn.execute(
+        "SELECT status,source_hash,error FROM domain_run WHERE domain_id='life'"
+    ).fetchone()
+    assert report.skipped == 1
+    assert report.warnings
+    assert row["status"] == "warning"
+    assert row["source_hash"] is None
+    assert "no life changes" in row["error"]
+    assert conn.execute("SELECT COUNT(*) FROM domain_state WHERE domain_id='life'").fetchone()[0] == 0
+
+
+def test_life_source_hash_matches_incremental_prompt_text():
+    class Backend:
+        def __init__(self):
+            self.messages = []
+        def complete_json(self, task, messages, schema):
+            self.messages.append(messages)
+            return {"summary": "ok", "feedback": [], "evidence": []}
+
+    fake = FakeDynalist()
+    fake.add_doc("life")
+    recent = int(datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    fake.add("life", "root", "오늘 기록", created=recent, modified=recent)
+    settings = Settings()
+    settings.domains["life"].file_ids = ["life"]
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+    backend = Backend()
+    process_domains(
+        conn, {"life": _index(fake, "life")}, settings,
+        LLMClient(backend=backend), run_id=run_id, run_date="2026-11-20",
+    )
+    prompt_text = backend.messages[0][-1]["content"].split("기록:\n", 1)[1]
+    saved = conn.execute(
+        "SELECT source_hash FROM domain_state WHERE domain_id='life'"
+    ).fetchone()["source_hash"]
+    import hashlib
+    assert saved == "v1:" + hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+
+
+def test_life_incremental_text_empty_when_no_recent_nodes():
+    fake = FakeDynalist()
+    fake.add_doc("life")
+    old = int(datetime(2026, 11, 18, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    fake.add("life", "root", "오래된 기록", created=old, modified=old)
+
+    assert _life_incremental_text(
+        _index(fake, "life"), lambda _: False,
+        datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")),
+    ) == ""
+
+
+def test_life_incremental_text_excludes_bot_feedback_subtree():
+    fake = FakeDynalist()
+    fake.add_doc("life")
+    recent = int(datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    bot = fake.add("life", "root", "봇 피드백", created=recent, modified=recent)
+    fake.add("life", bot, "봇 하위", created=recent, modified=recent)
+    user = fake.add("life", "root", "사용자 기록", created=recent, modified=recent)
+    index = _index(fake, "life")
+
+    text = _life_incremental_text(
+        index, lambda node: node.id == bot,
+        datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert "사용자 기록" in text
+    assert "봇 피드백" not in text
+    assert "봇 하위" not in text
 
 
 def test_pipeline_keeps_work_document_out_of_study_ingest(tmp_path):

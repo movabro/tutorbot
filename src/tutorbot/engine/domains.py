@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -16,6 +19,8 @@ from ..llm.schemas import SchemaValidationError
 from ..parse.classify import Classifier
 from ..parse.personal_tasks import parse_tracked_tasks
 from ..parse.tags import strip_tags
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -188,6 +193,9 @@ def _source_content(
     index: NodeIndex,
     profile: DomainProfileCfg,
     settings: Settings,
+    *,
+    life_incremental: bool = False,
+    cutoff: datetime | None = None,
 ) -> tuple[str, list[str], list[tuple[str, str, str]]]:
     registry = {
         row["node_id"]: row["kind"]
@@ -202,7 +210,66 @@ def _source_content(
             conn, file_id, index, profile, classifier.is_bot,
         )
         return text, warnings, pending_hashes
+    if life_incremental and cutoff is not None:
+        return _life_incremental_text(index, classifier.is_bot, cutoff), [], []
     return index.text_of("root", skip=classifier.is_bot), [], []
+
+
+def _life_incremental_text(
+    index: NodeIndex,
+    is_bot: Callable[[Node], bool],
+    cutoff: datetime,
+) -> str:
+    """Render changed life subtrees plus only their non-bot ancestor paths."""
+    cutoff_ms = int(cutoff.timestamp() * 1000)
+    bot_subtree: set[str] = set()
+
+    def mark_bot(node_id: str) -> None:
+        node = index.get(node_id)
+        if node is None:
+            return
+        bot_subtree.add(node_id)
+        for child_id in node.children:
+            mark_bot(child_id)
+
+    for node in index.walk():
+        if node.id not in bot_subtree and is_bot(node):
+            mark_bot(node.id)
+
+    changed = {
+        node.id for node in index.walk()
+        if node.id not in bot_subtree
+        and (node.created >= cutoff_ms or node.modified >= cutoff_ms)
+    }
+    if not changed:
+        return ""
+    top_changed = [
+        node_id for node_id in changed
+        if not any(ancestor.id in changed for ancestor in index.ancestors(node_id))
+    ]
+    relevant: set[str] = set()
+    for node_id in top_changed:
+        relevant.add(node_id)
+        relevant.update(a.id for a in index.ancestors(node_id) if a.id not in bot_subtree)
+    lines: list[str] = []
+
+    def render(node_id: str, depth: int, subtree: bool) -> None:
+        node = index.get(node_id)
+        if node is None or node_id in bot_subtree:
+            return
+        if node.content:
+            lines.append("  " * depth + node.content)
+        if node.note:
+            lines.extend("  " * depth + "  > " + line for line in node.note.splitlines())
+        for child_id in node.children:
+            if subtree or child_id in relevant:
+                render(child_id, depth + 1, subtree or child_id in top_changed)
+
+    # Render relevant ancestor chains independently, but changed roots once.
+    roots = [n.id for n in index.children_of("root") if n.id in relevant]
+    for root_id in roots:
+        render(root_id, 0, root_id in top_changed)
+    return "\n".join(lines)
 
 
 def _messages(
@@ -237,11 +304,21 @@ def process_domains(
     llm: LLMClient,
     *,
     run_id: int,
+    run_date: str | None = None,
     bot_tag: str = "tutorbot",
 ) -> DomainReport:
     """Analyze changed domain inputs and enqueue feedback in the profile's own document."""
     report = DomainReport()
+    run_date = run_date or clock.local_date("Asia/Seoul").isoformat()
+    try:
+        if date.fromisoformat(run_date).isoformat() != run_date:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError("run_date must be YYYY-MM-DD") from None
     profiles = settings.domains
+    cutoff = datetime.combine(
+        date.fromisoformat(run_date), time.min, ZoneInfo("Asia/Seoul"),
+    ) - timedelta(days=1)
     for domain_id, profile in profiles.items():
         if domain_id == "study" or not profile.enabled or not profile.file_ids:
             continue
@@ -259,28 +336,87 @@ def process_domains(
             continue
 
         source_parts: list[str] = []
+        analyzed_source_ids: list[str] = []
         source_warnings: list[str] = []
         source_failures: list[str] = []
+        failed_source_ids: list[str] = []
         pending_task_hashes: list[tuple[str, str, str]] = []
+        life_profile = profiles.get("life")
+        life_source_ids = set(life_profile.file_ids) if life_profile and life_profile.enabled else set()
+        life_counts: dict[str, int | None] = {
+            file_id: None for file_id in source_ids
+            if domain_id == "life" or (domain_id == "career" and file_id in life_source_ids)
+        }
+        life_contributing_sources: set[str] = set()
+
+        def log_life_source_result(target_id: str, result: str) -> None:
+            for source_id, count in life_counts.items():
+                source_result = (
+                    "skipped"
+                    if result != "failed" and source_id not in life_contributing_sources
+                    else result
+                )
+                logger.info(
+                    "life source domain_id=%s source_id=%s target_id=%s cutoff=%s changed_nodes=%s result=%s",
+                    domain_id, source_id, target_id, cutoff.isoformat(),
+                    count if count is not None else "unknown", source_result,
+                )
+
         for file_id in source_ids:
             index = indices.get(file_id)
             if index is None:
                 source_failures.append(f"{domain_id}/{file_id}: source document was not read")
+                failed_source_ids.append(file_id)
                 continue
             try:
+                life_incremental = domain_id == "life" or (
+                    domain_id == "career" and file_id in life_source_ids
+                )
                 text, warnings, task_hashes = _source_content(
                     conn, domain_id, file_id, index, profile, settings,
+                    life_incremental=life_incremental, cutoff=cutoff,
                 )
+                if life_incremental:
+                    registry_ids = {
+                        row["node_id"] for row in conn.execute(
+                            "SELECT node_id FROM bot_node WHERE file_id=? AND deleted_at IS NULL",
+                            (file_id,),
+                        )
+                    }
+                    classifier = Classifier(index, settings.tags, {
+                        node_id: "domain_feedback" for node_id in registry_ids
+                    })
+                    life_counts[file_id] = sum(
+                        1 for node in index.walk()
+                        if not classifier.is_bot(node)
+                        if node.created >= int(cutoff.timestamp() * 1000)
+                        or node.modified >= int(cutoff.timestamp() * 1000)
+                    )
+                    if not text.strip():
+                        warnings.append(
+                            f"{domain_id}/{file_id}: no life changes since {cutoff.isoformat()}"
+                        )
                 if text.strip():
                     source_parts.append(f"## {file_id}\n{text}")
+                    analyzed_source_ids.append(file_id)
+                    if life_incremental:
+                        life_contributing_sources.add(file_id)
                 source_warnings.extend(warnings)
                 pending_task_hashes.extend(task_hashes)
             except Exception as exc:
                 source_failures.append(f"{domain_id}/{file_id}: {exc}")
+                failed_source_ids.append(file_id)
 
         if source_failures:
             report.errors.extend(source_failures)
+            # Include only sources whose content was successfully read and contributed
+            # to this analysis; failed IDs are reported separately below.
             for file_id in target_ids:
+                log_life_source_result(file_id, "failed")
+                logger.warning(
+                    "domain analysis failed domain_id=%s source_ids=%s failed_source_ids=%s target_id=%s reason=source_read_failed",
+                    domain_id, analyzed_source_ids, failed_source_ids, file_id,
+                )
                 conn.execute(
                     "INSERT INTO domain_run(run_id,domain_id,file_id,status,error,created_at)"
                     " VALUES(?,?,?,'error',?,?)",
@@ -289,19 +425,41 @@ def process_domains(
             continue
 
         source_text = "\n\n".join(source_parts).strip()
-        source_hash = "v1:" + hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        # A document counts as an analysis source only when it contributes text.
+        actual_source_ids = analyzed_source_ids
         report.warnings.extend(source_warnings)
         for target_id in target_ids:
             target_index = indices.get(target_id)
             if target_index is None:
                 message = f"{domain_id}/{target_id}: feedback document was not read"
                 report.errors.append(message)
+                log_life_source_result(target_id, "failed")
+                logger.warning("domain analysis failed domain_id=%s source_ids=%s target_id=%s reason=target_not_read", domain_id, actual_source_ids, target_id)
                 conn.execute(
-                    "INSERT INTO domain_run(run_id,domain_id,file_id,status,source_hash,error,created_at)"
-                    " VALUES(?,?,?,'error',?,?,?)",
-                    (run_id, domain_id, target_id, source_hash, message, clock.now_iso()),
+                    "INSERT INTO domain_run(run_id,domain_id,file_id,status,error,created_at)"
+                    " VALUES(?,?,?,'error',?,?)",
+                    (run_id, domain_id, target_id, message, clock.now_iso()),
                 )
                 continue
+            # Empty life increments are not a source hash: otherwise the same
+            # empty input is needlessly reconsidered as a normal domain run.
+            if not source_text:
+                message = "; ".join(source_warnings) if source_warnings else "no analyzable user records"
+                report.warnings.append(f"{domain_id}/{target_id}: no analyzable user records")
+                log_life_source_result(target_id, "skipped")
+                logger.info(
+                    "domain analysis skipped domain_id=%s source_ids=%s target_id=%s reason=no_analyzable_user_records",
+                    domain_id, actual_source_ids, target_id,
+                )
+                conn.execute(
+                    "INSERT INTO domain_run(run_id,domain_id,file_id,status,error,created_at)"
+                    " VALUES(?,?,?,'warning',?,?)",
+                    (run_id, domain_id, target_id, message, clock.now_iso()),
+                )
+                report.skipped += 1
+                continue
+            source_hash = "v1:" + hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            logger.info("domain analysis started domain_id=%s source_ids=%s target_id=%s", domain_id, actual_source_ids, target_id)
             previous = conn.execute(
                 "SELECT source_hash,status FROM domain_state WHERE domain_id=? AND file_id=?",
                 (domain_id, target_id),
@@ -312,21 +470,12 @@ def process_domains(
                 and previous["status"] == "processed"
             ):
                 report.skipped += 1
-                continue
-            if not source_text:
-                report.warnings.append(f"{domain_id}/{target_id}: no analyzable user records")
-                conn.execute(
-                    "INSERT INTO domain_run(run_id,domain_id,file_id,status,source_hash,error,created_at)"
-                    " VALUES(?,?,?,'warning',?,?,?)",
-                    (
-                        run_id, domain_id, target_id, source_hash,
-                        "; ".join(source_warnings) if source_warnings else "no analyzable user records",
-                        clock.now_iso(),
-                    ),
+                log_life_source_result(target_id, "skipped")
+                logger.info(
+                    "domain analysis skipped domain_id=%s source_ids=%s target_id=%s reason=unchanged_source_hash",
+                    domain_id, actual_source_ids, target_id,
                 )
-                report.skipped += 1
                 continue
-
             try:
                 result = llm.complete_json(
                     "domain_feedback",
@@ -335,6 +484,8 @@ def process_domains(
                     ref=f"{domain_id}:{target_id}",
                 )
             except Exception as exc:
+                log_life_source_result(target_id, "failed")
+                logger.warning("domain analysis failed domain_id=%s source_ids=%s target_id=%s", domain_id, actual_source_ids, target_id)
                 message = f"{domain_id}/{target_id}: analysis failed: {exc}"
                 report.errors.append(message)
                 conn.execute(
@@ -350,6 +501,7 @@ def process_domains(
                 )
                 continue
 
+            logger.info("domain analysis succeeded domain_id=%s source_ids=%s target_id=%s", domain_id, actual_source_ids, target_id)
             feedback_lines = [result["summary"], *result["feedback"]]
             if result["evidence"]:
                 feedback_lines.append("근거: " + "; ".join(result["evidence"]))
@@ -365,7 +517,7 @@ def process_domains(
                     action="insert",
                     parent_ref="node:root",
                     idx=-1,
-                    payload={"content": f"🤖 {domain_id} 피드백 #{bot_tag}\n" + "\n".join(feedback_lines)},
+                    payload={"content": f"🤖 {domain_id} 피드백 #{bot_tag}\n!({run_date})\n" + "\n".join(feedback_lines)},
                     bot_kind="domain_feedback",
                     marker=marker,
                 )
@@ -396,5 +548,6 @@ def process_domains(
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
+            log_life_source_result(target_id, "succeeded")
             report.processed += 1
     return report

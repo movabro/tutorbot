@@ -57,9 +57,10 @@ provider = "gemini"
 api_key_env = "LLM_API_KEY"
 model_smart = "<사용할 Gemini 모델>"
 model_fast = "<사용할 Gemini 모델>"
+requests_per_minute = 10
 ```
 
-`file_ids`에는 처리할 Dynalist 문서 ID를 하나 이상 지정할 수 있습니다. 목록을 비워 두면 `DYNALIST_FILE_ID` 환경변수가 설정된 경우 그 값을 사용합니다. 현재 LLM 구현은 Gemini만 지원하며 기본 모델은 `gemini-3.5-flash-lite`입니다. `model_smart`와 `model_fast`로 모델을 변경할 수 있습니다. `config.toml`의 전체 기본값과 태그·퀴즈·처리 제한은 프로젝트 설정 파일을 참고하세요.
+`file_ids`에는 처리할 Dynalist 문서 ID를 하나 이상 지정할 수 있습니다. 목록을 비워 두면 `DYNALIST_FILE_ID` 환경변수가 설정된 경우 그 값을 사용합니다. 현재 LLM 구현은 Gemini만 지원하며 기본 모델은 `gemini-3.5-flash-lite`입니다. `model_smart`와 `model_fast`로 모델을 변경할 수 있습니다. `[llm].requests_per_minute`는 실제 Gemini 요청 사이의 프로세스 내 제한으로, 생략하면 10 RPM(최소 6초 간격)입니다. 양의 정수만 허용되며 여러 독립 프로세스/호스트의 합산 요청률은 조정하지 않습니다. 실제 Gemini client가 처음 요청할 때 로그에 RPM 값과 프로세스 로컬 범위(다른 프로세스/호스트와 조정되지 않음)를 한 번 기록합니다. 이 값은 RPM만 제어하고 TPM·일일 할당량이나 Google이 제공하는 실제 API quota를 보장하지 않습니다. 설정값 및 태그·퀴즈·처리 제한의 전체 기본값은 프로젝트 설정 파일을 참고하세요.
 
 다른 설정 파일을 사용하려면 각 명령 앞에 `-c`를 지정합니다.
 
@@ -371,4 +372,4 @@ tutorbot stats
 - `--dry-run`은 Dynalist 쓰기와 실제 DB 변경을 막지만, 기본 설정에서는 실제 LLM API 호출까지 막지는 않습니다.
 - 현재 CLI에는 매일 자동 실행 기능이 없습니다. 정기 실행이 필요하면 외부 cron 또는 systemd timer에서 `tutorbot run`을 호출하도록 별도로 설정해야 합니다.
 
-최신 다중 도메인 기획은 [spec_v0.3.md](./specs/spec_v0.3.md)를, 기존 학습 상세 명세는 [spec_v0.2.md](./specs/spec_v0.2.md)를 참고하세요.
+최신 Gemini 요청 제한·오류 재시도 정책은 [spec_v0.4.md](./specs/spec_v0.4.md)를, 다중 도메인 기획은 [spec_v0.3.md](./specs/spec_v0.3.md)를, 기존 학습 상세 명세는 [spec_v0.2.md](./specs/spec_v0.2.md)를 참고하세요.

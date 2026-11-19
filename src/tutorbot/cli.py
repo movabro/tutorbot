@@ -14,7 +14,7 @@ from . import db
 from .config import load_settings
 from .dynalist.client import DynalistClient, DynalistError
 from .dynalist.tree import NodeIndex
-from .llm.client import LLMClient
+from .llm.client import LLMClient, LLMError
 from .pipeline import run_pipeline
 
 
@@ -106,6 +106,7 @@ def cmd_init_db(args, settings) -> int:
 def cmd_doctor(args, settings) -> int:
     """Read-only checks; with --write-test also insert->edit->delete a scratch node (M0 smoke test)."""
     cl = _client(settings)
+    llm_client = None
     try:
         files = {f["id"]: f for f in cl.file_list()}
         for fid in settings.dynalist.file_ids:
@@ -116,7 +117,7 @@ def cmd_doctor(args, settings) -> int:
             print(f"{fid} ({files[fid].get('title')}): {len(idx.by_id) - 1} nodes, version={idx.version}")
             if args.write_test:
                 _write_test(cl, fid)
-                _llm_test(settings)
+                llm_client = _llm_test(settings, llm_client)
     except DynalistError as e:
         print(f"Dynalist request failed: {e}", file=sys.stderr)
         return 1
@@ -139,32 +140,43 @@ def _write_test(cl: DynalistClient, fid: str) -> None:
     print("edit ok; delete ok:", cl.doc_edit(fid, [ch_delete(first), ch_delete(second)]) == [])
 
 
-def _llm_test(settings) -> None:
-    import json as _json
-    import urllib.error
-    import urllib.request
+def _llm_test(settings, client=None):
+    if client is False:
+        print("llm_test: API key unavailable")
+        return False
+    configured_fast_model = settings.llm.model_fast or "gemini-3.5-flash-lite"
+
+    def valid_test_response(value: Any) -> Any:
+        if not isinstance(value, dict) or value.get("ok") is not True:
+            raise ValueError("invalid test response")
+        return value
+
+    if client is None:
+        try:
+            key = settings.llm_api_key()
+        except RuntimeError:
+            print("llm_test: API key unavailable")
+            return False
+        client = LLMClient(
+            provider=settings.llm.provider,
+            api_key=key,
+            model_fast=configured_fast_model,
+            model_smart=settings.llm.model_smart,
+            requests_per_minute=getattr(settings.llm, "requests_per_minute", 10),
+        )
+    model = client.model_for_task("doctor_test")
+
     try:
-        key = settings.llm_api_key()
-    except Exception as e:
-        print("llm_test: no key:", e)
-        return
-    model = settings.llm.model_fast or "gemini-3.5-flash-lite"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": 'Return JSON: {"ok": true}'}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0},
-    }
-    req = urllib.request.Request(url, data=_json.dumps(body).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
-            txt = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            print(f"gemini ({model}) ok:", txt)
-    except urllib.error.HTTPError as e:
-        print(f"gemini ({model}) HTTP {e.code}:", e.read().decode("utf-8", errors="replace")[:300])
-    except Exception as e:
-        print(f"gemini ({model}) error:", e)
+        client.complete_json(
+            "doctor_test",
+            [{"role": "user", "content": 'Return JSON: {"ok": true}'}],
+            validator=valid_test_response,
+        )
+        print(f"gemini ({model}) ok")
+    except LLMError:
+        # LLMError summaries are safe, but keep this diagnostic deliberately generic too.
+        print(f"gemini ({model}) request failed")
+    return client
 
 
 def cmd_run(args, settings) -> int:
@@ -194,6 +206,7 @@ def cmd_run(args, settings) -> int:
             model_fast=settings.llm.model_fast,
             backend=_DefaultFakeLLMBackend(),
             conn=conn,
+            requests_per_minute=getattr(settings.llm, "requests_per_minute", 10),
         )
     else:
         llm = LLMClient(
@@ -202,6 +215,7 @@ def cmd_run(args, settings) -> int:
             model_smart=settings.llm.model_smart,
             model_fast=settings.llm.model_fast,
             conn=conn,
+            requests_per_minute=getattr(settings.llm, "requests_per_minute", 10),
         )
 
     try:
@@ -276,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
         if is_run_invocation:
             logger.exception("Command initialization failed")
         raise
+    if args.cmd == "doctor":
+        _configure_logging(settings)
     return {
         "init-db": cmd_init_db,
         "doctor": cmd_doctor,

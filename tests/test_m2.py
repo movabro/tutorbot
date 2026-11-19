@@ -4,6 +4,7 @@ idempotency (2 consecutive runs -> 0 changes on 2nd run), and fault injection (a
 from __future__ import annotations
 
 from types import SimpleNamespace
+import logging
 
 from tests.fakes import FakeDynalist, FakeLLM
 from tutorbot import db, render
@@ -15,6 +16,44 @@ from tutorbot.parse.classify import DEFAULT_TAGS
 from tutorbot.pipeline import run_pipeline
 
 F = "doc1"
+
+
+def test_outbox_write_logs_file_and_returned_node_id(caplog):
+    fk = FakeDynalist()
+    fk.add_doc(F)
+    conn = db.connect(":memory:")
+    db.migrate(conn)
+    enqueue_op(conn, op_key="log-insert", file_id=F, action="insert",
+               parent_ref="node:root", payload={"content": "safe feedback"})
+    client = DynalistClient("tok", transport=fk, sleep=lambda _: None)
+    with caplog.at_level(logging.INFO, logger="tutorbot.dynalist.writer"):
+        report = flush_outbox(conn, client)
+    result_id = conn.execute(
+        "SELECT result_node_id FROM write_op WHERE op_key='log-insert'"
+    ).fetchone()[0]
+    assert report.done == 1
+    assert f"file_id={F}" in caplog.text
+    assert f"result_node_id={result_id}" in caplog.text
+
+
+def test_outbox_failure_log_does_not_expose_exception_credentials(caplog):
+    class SecretFailureDynalist(FakeDynalist):
+        def _doc_edit(self, body):
+            raise RuntimeError("Authorization: Bearer super-secret-token")
+
+    fk = SecretFailureDynalist()
+    fk.add_doc(F)
+    conn = db.connect(":memory:")
+    db.migrate(conn)
+    enqueue_op(conn, op_key="safe-failure", file_id=F, action="insert",
+               parent_ref="node:root", payload={"content": "private feedback"})
+    client = DynalistClient("tok", transport=fk, sleep=lambda _: None)
+    with caplog.at_level(logging.WARNING, logger="tutorbot.dynalist.writer"):
+        flush_outbox(conn, client)
+    assert "Dynalist request failed" in caplog.text
+    assert "super-secret-token" not in caplog.text
+    assert "Authorization" not in caplog.text
+    assert "private feedback" not in caplog.text
 
 
 def make_settings(tmp_path):

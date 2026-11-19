@@ -32,6 +32,7 @@ model_smart = "<set me>"
 model_fast = "<set me>"
 daily_token_budget = 300000
 index_full_threshold = 150
+requests_per_minute = 10            # Process-local Gemini request limit; not a quota guarantee
 
 [logging]
 log_file = "logs/tutorbot.log"

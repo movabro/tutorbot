@@ -287,7 +287,7 @@ def run_pipeline(
         )
         if has_configured_domains:
             domain_report = process_domains(
-                conn, indices, settings, llm, run_id=run_id, bot_tag=bot_tag,
+                conn, indices, settings, llm, run_id=run_id, run_date=r_date, bot_tag=bot_tag,
             )
             domain_stats = domain_report.summary()
             stats["domains"] = domain_stats

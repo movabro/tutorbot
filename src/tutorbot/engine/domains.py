@@ -272,6 +272,28 @@ def _life_incremental_text(
     return "\n".join(lines)
 
 
+def _recent_user_nodes(
+    index: NodeIndex,
+    is_bot: Callable[[Node], bool],
+    cutoff: datetime,
+    *,
+    direct_only: bool = False,
+) -> list[Node]:
+    """Return top-level recent user nodes (or direct children of root for career)."""
+    cutoff_ms = int(cutoff.timestamp() * 1000)
+    changed: list[Node] = [
+        node for node in index.walk()
+        if not is_bot(node)
+        and (node.created >= cutoff_ms or node.modified >= cutoff_ms)
+    ]
+    if direct_only:
+        return [
+            node for node in changed
+            if index.parent_of.get(node.id) == "root"
+        ]
+    return changed
+
+
 def _messages(
     domain_id: str,
     source_text: str,
@@ -506,21 +528,72 @@ def process_domains(
             if result["evidence"]:
                 feedback_lines.append("근거: " + "; ".join(result["evidence"]))
             marker = f"tb:domain_feedback:{domain_id}:{source_hash[3:19]}"
-            op_key = f"domain-feedback:{domain_id}:{target_id}:{source_hash}"
+            target_nodes: list[Node] = []
+            if domain_id == "career":
+                target_nodes = _recent_user_nodes(target_index, Classifier(
+                    target_index,
+                    settings.tags,
+                    {
+                        row["node_id"]: row["kind"]
+                        for row in conn.execute(
+                            "SELECT node_id,kind FROM bot_node WHERE file_id=? AND deleted_at IS NULL",
+                            (target_id,),
+                        )
+                    },
+                ).is_bot, cutoff, direct_only=True)
+            elif domain_id in ("work", "life"):
+                source_index = indices.get(target_id)
+                if source_index is not None:
+                    registry = {
+                        row["node_id"]: row["kind"]
+                        for row in conn.execute(
+                            "SELECT node_id,kind FROM bot_node WHERE file_id=? AND deleted_at IS NULL",
+                            (target_id,),
+                        )
+                    }
+                    target_nodes = _recent_user_nodes(
+                        source_index,
+                        Classifier(source_index, settings.tags, registry).is_bot,
+                        cutoff,
+                    )
             conn.execute("BEGIN")
             try:
-                enqueue_op(
-                    conn,
-                    run_id=run_id,
-                    op_key=op_key,
-                    file_id=target_id,
-                    action="insert",
-                    parent_ref="node:root",
-                    idx=-1,
-                    payload={"content": f"🤖 {domain_id} 피드백 #{bot_tag}\n!({run_date})\n" + "\n".join(feedback_lines)},
-                    bot_kind="domain_feedback",
-                    marker=marker,
+                feedback_parents = (
+                    [("node:" + node.id, node.id) for node in target_nodes]
+                    if target_nodes
+                    else [("node:root", None)]
                 )
+                summary = str(result["summary"]).strip() or f"{domain_id} 피드백"
+                if len(summary) > 60:
+                    summary = summary[:57].rstrip() + "..."
+                concrete_lines = [str(line).strip() for line in result["feedback"] if str(line).strip()]
+                if result["evidence"]:
+                    concrete_lines.append("근거: " + "; ".join(str(v) for v in result["evidence"]))
+                note = "\n".join(concrete_lines)
+                for parent_ref, node_id in feedback_parents:
+                    parent_suffix = f":{node_id}" if node_id is not None else ""
+                    op_key = f"domain-feedback:{domain_id}:{target_id}:{node_id or 'root'}:{source_hash}"
+                    if node_id is None:
+                        # Retain the pre-existing root op-key shape for fallback feedback.
+                        op_key = f"domain-feedback:{domain_id}:{target_id}:{source_hash}"
+                    node_marker = (
+                        f"{marker}:node:{node_id}" if node_id is not None else marker
+                    )
+                    enqueue_op(
+                        conn,
+                        run_id=run_id,
+                        op_key=op_key,
+                        file_id=target_id,
+                        action="insert",
+                        parent_ref=parent_ref,
+                        idx=-1,
+                        payload={
+                            "content": f"🤖 {domain_id} 피드백 - {summary} !({run_date}) #{bot_tag}",
+                            "note": note,
+                        },
+                        bot_kind="domain_feedback",
+                        marker=node_marker,
+                    )
                 conn.execute(
                     "INSERT INTO domain_state(domain_id,file_id,source_hash,feedback_json,status,last_error,updated_at)"
                     " VALUES(?,?,?,?,'processed',NULL,?) ON CONFLICT(domain_id,file_id) DO UPDATE SET "

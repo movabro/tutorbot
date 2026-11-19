@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 import logging
+import json
 
 import pytest
 
@@ -587,6 +588,94 @@ def test_life_incremental_text_excludes_bot_feedback_subtree():
     assert "사용자 기록" in text
     assert "봇 피드백" not in text
     assert "봇 하위" not in text
+
+
+def test_work_and_life_create_feedback_under_each_recent_changed_node():
+    class Backend:
+        def complete_json(self, task, messages, schema):
+            return {"summary": "짧은 요약", "feedback": ["구체적 근거를 남긴다"], "evidence": ["사용자 기록"]}
+
+    fake = FakeDynalist()
+    for file_id in ("work", "life"):
+        fake.add_doc(file_id)
+    recent = int(datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    work_a = fake.add("work", "root", "업무 기록 A", created=recent, modified=recent)
+    work_b = fake.add("work", "root", "업무 기록 B", created=recent, modified=recent)
+    life_a = fake.add("life", "root", "생활 기록 A", created=recent, modified=recent)
+    life_b = fake.add("life", "root", "생활 기록 B", created=recent, modified=recent)
+
+    settings = Settings()
+    settings.domains["work"].file_ids = ["work"]
+    settings.domains["life"].file_ids = ["life"]
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+    process_domains(
+        conn, {"work": _index(fake, "work"), "life": _index(fake, "life")},
+        settings, LLMClient(backend=Backend()), run_id=run_id, run_date="2026-11-20",
+    )
+
+    work_ops = conn.execute(
+        "SELECT parent_ref,payload_json FROM write_op WHERE file_id='work'"
+    ).fetchall()
+    life_ops = conn.execute(
+        "SELECT parent_ref,payload_json FROM write_op WHERE file_id='life'"
+    ).fetchall()
+    assert {row["parent_ref"] for row in work_ops} == {f"node:{work_a}", f"node:{work_b}"}
+    assert {row["parent_ref"] for row in life_ops} == {f"node:{life_a}", f"node:{life_b}"}
+    for row in [*work_ops, *life_ops]:
+        payload = json.loads(row["payload_json"])
+        assert "짧은 요약" in payload["content"]
+        assert "!(" in payload["content"]
+        assert "구체적 근거를 남긴다" in payload["note"]
+
+
+def test_career_direct_recent_nodes_else_root_feedback():
+    class Backend:
+        def complete_json(self, task, messages, schema):
+            return {"summary": "커리어 요약", "feedback": ["다음 행동"], "evidence": ["근거"]}
+
+    fake = FakeDynalist()
+    fake.add_doc("career")
+    fake.add_doc("work")
+    fake.add("work", "root", "업무 근거")
+    old = int(datetime(2026, 11, 18, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    recent = int(datetime(2026, 11, 19, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    direct_a = fake.add("career", "root", "최근 커리어 노드 A", created=recent, modified=recent)
+    direct_b = fake.add("career", "root", "최근 커리어 노드 B", created=recent, modified=recent)
+    fake.add("career", direct_a, "자식도 최근이지만 직접 노드만 대상", created=recent, modified=recent)
+
+    settings = Settings()
+    settings.domains["work"].file_ids = ["work"]
+    settings.domains["career"].file_ids = ["career"]
+    settings.domains["career"].source_domains = ["work"]
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+    process_domains(
+        conn, {"career": _index(fake, "career"), "work": _index(fake, "work")}, settings,
+        LLMClient(backend=Backend()), run_id=run_id, run_date="2026-11-20",
+    )
+    rows = conn.execute("SELECT parent_ref,payload_json FROM write_op WHERE file_id='career'").fetchall()
+    assert {row["parent_ref"] for row in rows} == {f"node:{direct_a}", f"node:{direct_b}"}
+
+    # Without direct recent nodes, the career root remains the fallback parent.
+    fake2 = FakeDynalist()
+    fake2.add_doc("career")
+    fake2.add("career", "root", "오래된 커리어 기록", created=old, modified=old)
+    conn2 = connect(":memory:")
+    migrate(conn2)
+    run_id2 = conn2.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+    process_domains(
+        conn2, {"career": _index(fake2, "career")}, Settings(),
+        LLMClient(backend=Backend()), run_id=run_id2, run_date="2026-11-20",
+    )
 
 
 def test_pipeline_keeps_work_document_out_of_study_ingest(tmp_path):

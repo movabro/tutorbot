@@ -52,10 +52,11 @@ def _index(fake: FakeDynalist, file_id: str) -> NodeIndex:
     return NodeIndex.from_doc_read(file_id, fake._doc_read({"file_id": file_id}))
 
 
-def test_domain_settings_preserve_legacy_learning_defaults(tmp_path):
+def test_domain_settings_read_study_documents_from_study_profile(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(
-        '[dynalist]\nfile_ids = ["study-doc"]\n'
+        '[dynalist]\ntoken_env = "DYNALIST_TOKEN"\n'
+        '[domains.study]\nenabled = true\nfile_ids = ["study-doc"]\n'
         '[domains.work]\nfile_ids = ["work-doc"]\ntags = ["project"]\n'
         '[domains.career]\nfile_ids = ["career-doc"]\n'
         '[domains.personal_tasks]\ntracking_tag_aliases = ["Task"]\n',
@@ -63,13 +64,26 @@ def test_domain_settings_preserve_legacy_learning_defaults(tmp_path):
     )
     settings = load_settings(path, dotenv_path=path.with_suffix(".env"))
 
-    assert settings.dynalist.file_ids == ["study-doc"]
-    assert settings.domains["study"].file_ids == []
+    assert settings.domains["study"].file_ids == ["study-doc"]
     assert settings.domains["work"].file_ids == ["work-doc"]
     assert settings.domains["work"].tags == ["project"]
     assert settings.domains["career"].source_domains == ["work", "life"]
     assert settings.domains["personal_tasks"].tracking_tag == "Track"
     assert settings.domains["personal_tasks"].tracking_tag_aliases == ["Task"]
+
+
+def test_legacy_dynalist_file_ids_are_not_supported(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text('[dynalist]\nfile_ids = ["legacy-doc"]\n', encoding="utf-8")
+    monkeypatch.setenv("DYNALIST_FILE_ID", "environment-doc")
+
+    with pytest.raises(TypeError):
+        load_settings(path, dotenv_path=path.with_suffix(".env"))
+
+    monkeypatch.delenv("DYNALIST_FILE_ID")
+    settings = load_settings(None, dotenv_path=path.with_suffix(".env"))
+    assert not hasattr(settings.dynalist, "file_ids")
+    assert settings.domains["study"].file_ids == []
 
 
 def test_personal_task_parser_requires_track_and_preserves_recursive_detail():

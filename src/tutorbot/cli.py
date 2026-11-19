@@ -98,9 +98,44 @@ def _client(settings) -> DynalistClient:
 
 
 def cmd_init_db(args, settings) -> int:
+    """Validate configured Dynalist documents before changing the local schema."""
+    cl = _client(settings)
+    try:
+        _files, missing = _configured_files(cl, settings)
+    except DynalistError as e:
+        print(f"Dynalist request failed: {e}", file=sys.stderr)
+        return 1
+    if missing:
+        print(f"! file(s) not found in file/list: {', '.join(missing)}", file=sys.stderr)
+        return 1
+
     conn = db.connect(settings.db_path)
     print(f"schema_version={db.migrate(conn)} path={settings.db_path}")
     return 0
+
+
+def _configured_file_ids(settings) -> list[str]:
+    profiles = getattr(settings, "domains", {})
+    if not isinstance(profiles, dict):
+        return []
+    file_ids: list[str] = []
+    for profile in profiles.values():
+        if getattr(profile, "enabled", False):
+            file_ids.extend(getattr(profile, "file_ids", []))
+    career = profiles.get("career")
+    if career is not None and getattr(career, "enabled", False):
+        for source_domain in getattr(career, "source_domains", []):
+            source_profile = profiles.get(source_domain)
+            if source_profile is not None and getattr(source_profile, "enabled", False):
+                file_ids.extend(getattr(source_profile, "file_ids", []))
+    return list(dict.fromkeys(file_ids))
+
+
+def _configured_files(cl: DynalistClient, settings) -> tuple[dict[str, dict], list[str]]:
+    """Fetch Dynalist's file list and identify configured IDs that are absent."""
+    files = {f["id"]: f for f in cl.file_list()}
+    missing = [fid for fid in _configured_file_ids(settings) if fid not in files]
+    return files, missing
 
 
 def cmd_doctor(args, settings) -> int:
@@ -108,11 +143,11 @@ def cmd_doctor(args, settings) -> int:
     cl = _client(settings)
     llm_client = None
     try:
-        files = {f["id"]: f for f in cl.file_list()}
-        for fid in settings.dynalist.file_ids:
-            if fid not in files:
-                print(f"! file {fid} not found in file/list")
-                return 1
+        files, missing = _configured_files(cl, settings)
+        if missing:
+            print(f"! file(s) not found in file/list: {', '.join(missing)}")
+            return 1
+        for fid in _configured_file_ids(settings):
             idx = NodeIndex.from_doc_read(fid, cl.doc_read(fid))
             print(f"{fid} ({files[fid].get('title')}): {len(idx.by_id) - 1} nodes, version={idx.version}")
             if args.write_test:

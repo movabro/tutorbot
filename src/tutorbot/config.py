@@ -93,7 +93,6 @@ def _simple_toml_parse(text: str) -> dict[str, Any]:
 @dataclass
 class DynalistCfg:
     token_env: str = "DYNALIST_TOKEN"
-    file_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -236,6 +235,4 @@ def load_settings(path: str | Path | None = None, dotenv_path: str | Path = ".en
     else:
         with open(path, "rb") as f:
             s = Settings.model_validate(_parse_toml_bytes(f.read()))
-    if not s.dynalist.file_ids and os.environ.get("DYNALIST_FILE_ID"):
-        s.dynalist.file_ids = [os.environ["DYNALIST_FILE_ID"]]
     return s

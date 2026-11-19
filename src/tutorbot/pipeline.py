@@ -124,15 +124,10 @@ def run_pipeline(
     tz_name = getattr(settings, "timezone", "Asia/Seoul")
     r_date = run_date or clock.local_date(tz_name).isoformat()
     bot_tag = getattr(getattr(settings, "tags", None), "bot", "tutorbot")
-    legacy_file_ids: list[str] = list(getattr(getattr(settings, "dynalist", None), "file_ids", []))
     profiles = getattr(settings, "domains", {})
     study_profile = profiles.get("study") if isinstance(profiles, dict) else None
     configured_study_ids = list(getattr(study_profile, "file_ids", []))
-    study_file_ids = (
-        list(dict.fromkeys([*legacy_file_ids, *configured_study_ids]))
-        if getattr(study_profile, "enabled", True)
-        else []
-    )
+    study_file_ids = configured_study_ids if getattr(study_profile, "enabled", True) else []
     file_ids = list(study_file_ids)
     if isinstance(profiles, dict):
         for domain_id, profile in profiles.items():

@@ -3,7 +3,6 @@ db_path = "data/tutorbot.sqlite3"
 
 [dynalist]
 token_env = "DYNALIST_TOKEN"          # token comes from env only
-file_ids = ["<doc id>"]
 
 [tags]
 goal  = ["목표", "goal"]
@@ -36,6 +35,10 @@ requests_per_minute = 10            # Process-local Gemini request limit; not a 
 
 [logging]
 log_file = "logs/tutorbot.log"
+
+[domains.study]
+enabled = true
+file_ids = ["<study document id>"]
 
 # Optional non-study domain profiles. Configure each profile's document IDs to enable it.
 # Career reads only the documents belonging to the configured source_domains and writes

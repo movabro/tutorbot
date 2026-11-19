@@ -22,7 +22,7 @@ def make_settings(tmp_path, daily_token_budget=300000):
     return SimpleNamespace(
         timezone="Asia/Seoul",
         db_path=str(tmp_path / "tb.sqlite3"),
-        dynalist=SimpleNamespace(file_ids=[F]),
+        domains={"study": SimpleNamespace(enabled=True, file_ids=[F])},
         tags=DEFAULT_TAGS,
         quiz=SimpleNamespace(
             per_day=5,

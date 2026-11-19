@@ -207,3 +207,38 @@ insert payload는 기존 JSON 구조를 유지하되 content는 한 줄의 요�
 - crash/retry 이후 같은 노드에 피드백 노드가 두 개 이상 생긴다.
 - life 24시간 정책 또는 career의 work 전체 + life 증분 조합이 깨진다.
 - 모든 관련 테스트가 green이 되기 전에 구현 완료를 선언한다.
+
+---
+
+# Study 문서 ID 설정 이전 — 변경 지점 및 테스트 계획
+
+## 목표 및 범위
+
+학습 문서 ID의 설정 위치를 `[dynalist].file_ids`에서 `[domains.study].file_ids`로 이전한다. 설정 로더와 pipeline은 legacy ID 및 `DYNALIST_FILE_ID` fallback을 사용하지 않는다. CLI 문서 존재 검사는 study 문서와 활성 도메인 문서를 대상으로 한다.
+
+코드베이스는 `pyproject.toml` 기반 Python 패키지이며, 설정 로딩은 `config.py`, 문서 선택은 `pipeline.py`, CLI 검사는 `cli.py`가 담당한다. 현재 doctor만 Dynalist 문서 존재를 확인하고, init-db에는 원격 존재 검사가 없다.
+
+## 입출력 인터페이스 및 데이터 구조
+
+- 실제 설정의 study ID `x5hNxn1nrQ5xKAiRuziVNoUh`는 `[domains.study].file_ids`에 둔다.
+- `[dynalist]`에는 `token_env`만 둔다. `DYNALIST_FILE_ID` fallback과 legacy `[dynalist].file_ids`를 지원하지 않는다.
+- CLI 검사 목록은 설정된 study 문서 및 활성 도메인 문서의 고유 ID 목록이다.
+
+## 파일별 생성/수정 계획
+
+- `src/tutorbot/config.py`: `DynalistCfg.file_ids` 및 환경변수 fallback 제거, legacy 키 미지원 처리.
+- `src/tutorbot/pipeline.py`: study 처리 목록에서 `domains.study.file_ids`만 사용하고 legacy 합산 제거. 다른 활성 도메인 및 career source 수집은 유지.
+- `src/tutorbot/cli.py`: 공통 문서 목록/존재 검사 기준을 doctor와 init-db에 적용. init-db에는 현재 없는 원격 문서 검사를 추가.
+- `tests/test_domains.py`: 새 설정 구조, legacy/env 제거, study만 학습 처리하는 동작을 검증.
+- CLI 테스트(`tests/test_client_db.py`, 필요 시 `tests/test_llm_client.py`): 두 명령의 문서 검사 범위와 누락 문서 처리를 검증하고 legacy doctor fixture를 갱신.
+- `config.toml`: 실제 ID를 `[domains.study].file_ids`로 이동.
+- `config.example.toml`, `docs/how_to_use.md`: legacy 설정/fallback 설명을 study 도메인 설정으로 교체.
+
+## 엣지 케이스 및 검증 기준 (Acceptance Criteria)
+
+- study 문서는 study 설정으로만 학습 처리되며, legacy ID가 추가 문서로 합산되지 않는다.
+- `DYNALIST_FILE_ID`만 설정해도 study ID가 생기지 않고, legacy `[dynalist].file_ids` 입력은 지원되지 않는다.
+- init-db와 doctor는 study 및 활성 도메인 문서를 검사하고 중복 ID를 한 번만 검사한다. 비활성 비-study 도메인은 제외한다.
+- 설정 예시와 사용 설명에 legacy file ID 또는 `DYNALIST_FILE_ID` fallback 설명이 남지 않는다.
+- Focused 테스트: `pytest tests/test_domains.py tests/test_client_db.py tests/test_llm_client.py -q`
+- 전체 테스트: `pytest -q`

@@ -99,6 +99,100 @@ def test_doctor_reports_dynalist_error_without_traceback(monkeypatch, capsys):
     assert capsys.readouterr().err == "Dynalist request failed: HTTP403: Access denied\n"
 
 
+def test_doctor_checks_unique_ids_from_enabled_domains(monkeypatch, capsys):
+    class FakeClient:
+        def __init__(self):
+            self.reads = []
+
+        def file_list(self):
+            return [{"id": fid, "title": fid} for fid in ("study", "work", "life")]
+
+        def doc_read(self, fid):
+            self.reads.append(fid)
+            return {}
+
+    client = FakeClient()
+    monkeypatch.setattr(cli, "_client", lambda settings: client)
+    monkeypatch.setattr(
+        cli.NodeIndex,
+        "from_doc_read",
+        lambda fid, doc: SimpleNamespace(by_id={"root": {}}, version=1),
+    )
+    settings = SimpleNamespace(domains={
+        "study": SimpleNamespace(enabled=True, file_ids=["study", "work"]),
+        "work": SimpleNamespace(enabled=True, file_ids=["work", "life"]),
+        "disabled": SimpleNamespace(enabled=False, file_ids=["not-checked"]),
+    })
+
+    assert cli.cmd_doctor(SimpleNamespace(write_test=False), settings) == 0
+    assert client.reads == ["study", "work", "life"]
+    assert "not-checked" not in capsys.readouterr().out
+
+
+def test_init_db_checks_unique_active_and_career_source_files_before_migration(monkeypatch, capsys):
+    class FakeClient:
+        def __init__(self):
+            self.list_calls = 0
+
+        def file_list(self):
+            self.list_calls += 1
+            return [{"id": fid, "title": fid} for fid in ("study", "work", "life", "career")]
+
+    client = FakeClient()
+    settings = SimpleNamespace(
+        db_path="test.sqlite3",
+        domains={
+            "study": SimpleNamespace(enabled=True, file_ids=["study", "work"]),
+            "work": SimpleNamespace(enabled=True, file_ids=["work"]),
+            "life": SimpleNamespace(enabled=True, file_ids=["life"]),
+            "career": SimpleNamespace(
+                enabled=True,
+                file_ids=["career"],
+                source_domains=["work", "life"],
+            ),
+            "disabled": SimpleNamespace(enabled=False, file_ids=["ignored"]),
+        },
+    )
+    calls = []
+    monkeypatch.setattr(cli, "_client", lambda settings: client)
+    monkeypatch.setattr(cli.db, "connect", lambda path: calls.append(("connect", path)) or "conn")
+    monkeypatch.setattr(cli.db, "migrate", lambda conn: calls.append(("migrate", conn)) or 7)
+
+    assert cli.cmd_init_db(SimpleNamespace(), settings) == 0
+    assert client.list_calls == 1
+    assert calls == [("connect", "test.sqlite3"), ("migrate", "conn")]
+    assert capsys.readouterr().out == "schema_version=7 path=test.sqlite3\n"
+
+
+def test_init_db_missing_configured_file_exits_before_migration(monkeypatch, capsys):
+    class FakeClient:
+        def file_list(self):
+            return [{"id": "study", "title": "study"}]
+
+    settings = SimpleNamespace(
+        db_path="test.sqlite3",
+        domains={
+            "study": SimpleNamespace(enabled=True, file_ids=["study", "missing-study"]),
+            "work": SimpleNamespace(enabled=True, file_ids=["work"]),
+            "career": SimpleNamespace(
+                enabled=True,
+                file_ids=["career"],
+                source_domains=["work", "life"],
+            ),
+            "life": SimpleNamespace(enabled=True, file_ids=["missing-source"]),
+            "disabled": SimpleNamespace(enabled=False, file_ids=["disabled-missing"]),
+        },
+    )
+    monkeypatch.setattr(cli, "_client", lambda settings: FakeClient())
+    monkeypatch.setattr(cli.db, "connect", lambda path: pytest.fail("database must not be opened"))
+    monkeypatch.setattr(cli.db, "migrate", lambda conn: pytest.fail("migration must not run"))
+
+    assert cli.cmd_init_db(SimpleNamespace(), settings) == 1
+    assert capsys.readouterr().err == (
+        "! file(s) not found in file/list: missing-study, work, career, missing-source\n"
+    )
+
+
 def test_5xx_retried():
     fk = FakeDynalist(); fk.add_doc("d")
     fk.fail("doc/read", "Err", times=1, status=503)

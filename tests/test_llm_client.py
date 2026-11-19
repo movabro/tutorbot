@@ -386,7 +386,9 @@ def test_doctor_write_test_reuses_one_client_and_limiter_across_files(monkeypatc
     )
     monkeypatch.setattr(cli, "_write_test", lambda client, fid: None)
     settings = SimpleNamespace(
-        dynalist=SimpleNamespace(file_ids=["file-a", "file-b"]),
+        domains={
+            "study": SimpleNamespace(enabled=True, file_ids=["file-a", "file-b"]),
+        },
         llm=SimpleNamespace(
             provider="gemini",
             model_fast="gemini-2.5-flash",

@@ -186,6 +186,53 @@ def _profile_sources(
     return list(dict.fromkeys(sources))
 
 
+def _is_life_incremental_source(
+    domain_id: str,
+    file_id: str,
+    life_source_ids: set[str],
+) -> bool:
+    return domain_id == "life" or (
+        domain_id == "career" and file_id in life_source_ids
+    )
+
+
+def _source_log_label(
+    domain_id: str,
+    file_id: str,
+    profile: DomainProfileCfg,
+    profiles: dict[str, DomainProfileCfg],
+    life_source_ids: set[str],
+) -> str:
+    if domain_id == "life":
+        return domain_id
+    if domain_id != "career":
+        return domain_id
+    if _is_life_incremental_source(domain_id, file_id, life_source_ids):
+        return "life"
+    for source_domain in profile.source_domains:
+        source_profile = profiles.get(source_domain)
+        if (
+            source_profile is not None
+            and source_profile.enabled
+            and file_id in source_profile.file_ids
+        ):
+            return source_domain
+    return domain_id
+
+
+def _source_log_labels(
+    domain_id: str,
+    file_ids: list[str],
+    profile: DomainProfileCfg,
+    profiles: dict[str, DomainProfileCfg],
+    life_source_ids: set[str],
+) -> list[str]:
+    return list(dict.fromkeys(
+        _source_log_label(domain_id, file_id, profile, profiles, life_source_ids)
+        for file_id in file_ids
+    ))
+
+
 def _source_content(
     conn: sqlite3.Connection,
     domain_id: str,
@@ -367,7 +414,7 @@ def process_domains(
         life_source_ids = set(life_profile.file_ids) if life_profile and life_profile.enabled else set()
         life_counts: dict[str, int | None] = {
             file_id: None for file_id in source_ids
-            if domain_id == "life" or (domain_id == "career" and file_id in life_source_ids)
+            if _is_life_incremental_source(domain_id, file_id, life_source_ids)
         }
         life_contributing_sources: set[str] = set()
 
@@ -380,7 +427,9 @@ def process_domains(
                 )
                 logger.info(
                     "life source domain_id=%s source_id=%s target_id=%s cutoff=%s changed_nodes=%s result=%s",
-                    domain_id, source_id, target_id, cutoff.isoformat(),
+                    domain_id,
+                    _source_log_label(domain_id, source_id, profile, profiles, life_source_ids),
+                    domain_id, cutoff.isoformat(),
                     count if count is not None else "unknown", source_result,
                 )
 
@@ -391,8 +440,8 @@ def process_domains(
                 failed_source_ids.append(file_id)
                 continue
             try:
-                life_incremental = domain_id == "life" or (
-                    domain_id == "career" and file_id in life_source_ids
+                life_incremental = _is_life_incremental_source(
+                    domain_id, file_id, life_source_ids,
                 )
                 text, warnings, task_hashes = _source_content(
                     conn, domain_id, file_id, index, profile, settings,
@@ -437,7 +486,10 @@ def process_domains(
                 log_life_source_result(file_id, "failed")
                 logger.warning(
                     "domain analysis failed domain_id=%s source_ids=%s failed_source_ids=%s target_id=%s reason=source_read_failed",
-                    domain_id, analyzed_source_ids, failed_source_ids, file_id,
+                    domain_id,
+                    _source_log_labels(domain_id, analyzed_source_ids, profile, profiles, life_source_ids),
+                    _source_log_labels(domain_id, failed_source_ids, profile, profiles, life_source_ids),
+                    domain_id,
                 )
                 conn.execute(
                     "INSERT INTO domain_run(run_id,domain_id,file_id,status,error,created_at)"
@@ -456,7 +508,12 @@ def process_domains(
                 message = f"{domain_id}/{target_id}: feedback document was not read"
                 report.errors.append(message)
                 log_life_source_result(target_id, "failed")
-                logger.warning("domain analysis failed domain_id=%s source_ids=%s target_id=%s reason=target_not_read", domain_id, actual_source_ids, target_id)
+                logger.warning(
+                    "domain analysis failed domain_id=%s source_ids=%s target_id=%s reason=target_not_read",
+                    domain_id,
+                    _source_log_labels(domain_id, actual_source_ids, profile, profiles, life_source_ids),
+                    domain_id,
+                )
                 conn.execute(
                     "INSERT INTO domain_run(run_id,domain_id,file_id,status,error,created_at)"
                     " VALUES(?,?,?,'error',?,?)",
@@ -471,7 +528,9 @@ def process_domains(
                 log_life_source_result(target_id, "skipped")
                 logger.info(
                     "domain analysis skipped domain_id=%s source_ids=%s target_id=%s reason=no_analyzable_user_records",
-                    domain_id, actual_source_ids, target_id,
+                    domain_id,
+                    _source_log_labels(domain_id, actual_source_ids, profile, profiles, life_source_ids),
+                    domain_id,
                 )
                 conn.execute(
                     "INSERT INTO domain_run(run_id,domain_id,file_id,status,error,created_at)"
@@ -481,7 +540,12 @@ def process_domains(
                 report.skipped += 1
                 continue
             source_hash = "v1:" + hashlib.sha256(source_text.encode("utf-8")).hexdigest()
-            logger.info("domain analysis started domain_id=%s source_ids=%s target_id=%s", domain_id, actual_source_ids, target_id)
+            logger.info(
+                "domain analysis started domain_id=%s source_ids=%s target_id=%s",
+                domain_id,
+                _source_log_labels(domain_id, actual_source_ids, profile, profiles, life_source_ids),
+                domain_id,
+            )
             previous = conn.execute(
                 "SELECT source_hash,status FROM domain_state WHERE domain_id=? AND file_id=?",
                 (domain_id, target_id),
@@ -495,7 +559,9 @@ def process_domains(
                 log_life_source_result(target_id, "skipped")
                 logger.info(
                     "domain analysis skipped domain_id=%s source_ids=%s target_id=%s reason=unchanged_source_hash",
-                    domain_id, actual_source_ids, target_id,
+                    domain_id,
+                    _source_log_labels(domain_id, actual_source_ids, profile, profiles, life_source_ids),
+                    domain_id,
                 )
                 continue
             try:
@@ -507,7 +573,12 @@ def process_domains(
                 )
             except Exception as exc:
                 log_life_source_result(target_id, "failed")
-                logger.warning("domain analysis failed domain_id=%s source_ids=%s target_id=%s", domain_id, actual_source_ids, target_id)
+                logger.warning(
+                    "domain analysis failed domain_id=%s source_ids=%s target_id=%s",
+                    domain_id,
+                    _source_log_labels(domain_id, actual_source_ids, profile, profiles, life_source_ids),
+                    domain_id,
+                )
                 message = f"{domain_id}/{target_id}: analysis failed: {exc}"
                 report.errors.append(message)
                 conn.execute(
@@ -523,7 +594,12 @@ def process_domains(
                 )
                 continue
 
-            logger.info("domain analysis succeeded domain_id=%s source_ids=%s target_id=%s", domain_id, actual_source_ids, target_id)
+            logger.info(
+                "domain analysis succeeded domain_id=%s source_ids=%s target_id=%s",
+                domain_id,
+                _source_log_labels(domain_id, actual_source_ids, profile, profiles, life_source_ids),
+                domain_id,
+            )
             feedback_lines = [result["summary"], *result["feedback"]]
             if result["evidence"]:
                 feedback_lines.append("근거: " + "; ".join(result["evidence"]))

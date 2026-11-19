@@ -33,8 +33,8 @@ def test_source_read_failure_logs_failed_source_and_target(caplog):
     with caplog.at_level(logging.WARNING, logger="tutorbot.engine.domains"):
         process_domains(conn, {}, settings, object(), run_id=run_id)
 
-    assert "failed_source_ids=['work-target']" in caplog.text
-    assert "target_id=work-target" in caplog.text
+    assert "failed_source_ids=['work']" in caplog.text
+    assert "target_id=work" in caplog.text
     assert "domain analysis succeeded" not in caplog.text
 
 
@@ -284,16 +284,18 @@ def test_career_uses_only_configured_sources_and_writes_its_own_document(caplog)
     fake = FakeDynalist()
     fake.add_doc("work-doc")
     fake.add_doc("life-doc")
+    fake.add_doc("life-doc-2")
     fake.add_doc("career-doc")
     fake.add("work-doc", "root", "업무 목표에 맞춰 보고 자동화를 진행했다")
     recent = int(datetime(2026, 11, 14, 15, tzinfo=ZoneInfo("UTC")).timestamp() * 1000)
     fake.add("life-doc", "root", "가족 일정에 참석했다", created=recent, modified=recent)
+    fake.add("life-doc-2", "root", "가족과 산책했다", created=recent, modified=recent)
     fake.add("career-doc", "root", "커리어 방향 관찰")
     indices = {fid: _index(fake, fid) for fid in fake.docs}
 
     settings = Settings()
     settings.domains["work"].file_ids = ["work-doc"]
-    settings.domains["life"].file_ids = ["life-doc"]
+    settings.domains["life"].file_ids = ["life-doc", "life-doc-2"]
     settings.domains["career"].file_ids = ["career-doc"]
     settings.domains["career"].source_domains = ["work", "life"]
     settings.domains["career"].tags = ["career", "#direction"]
@@ -326,20 +328,106 @@ def test_career_uses_only_configured_sources_and_writes_its_own_document(caplog)
     assert career_op["file_id"] == "career-doc"
     payload = conn.execute("SELECT payload_json FROM write_op WHERE file_id='career-doc'").fetchone()
     assert "!(2026-11-15)" in payload["payload_json"]
-    assert "source_ids=['work-doc', 'life-doc']" in caplog.text
-    assert "target_id=career-doc" in caplog.text
+    assert "source_ids=['work', 'life']" in caplog.text
+    assert "target_id=career" in caplog.text
     assert "domain analysis succeeded" in caplog.text
     assert (
-        "life source domain_id=career source_id=life-doc target_id=career-doc "
+        "life source domain_id=career source_id=life target_id=career "
         "cutoff=2026-11-14T00:00:00+09:00 changed_nodes=1 result=succeeded"
     ) in caplog.text
+    assert caplog.text.count(
+        "life source domain_id=career source_id=life target_id=career "
+    ) == 2
+    assert "work-doc" not in caplog.text
+    assert "life-doc" not in caplog.text
+    assert "career-doc" not in caplog.text
     assert "업무 목표에 맞춰 보고 자동화를 진행했다" not in caplog.text
     assert "가족 일정에 참석했다" not in caplog.text
     assert "프로필 관련 태그" not in caplog.text
     assert "private source record" not in caplog.text
     assert "요약" not in caplog.text
-    assert first.processed == 3
-    assert second.skipped == 3
+    assert first.processed == 4
+    assert second.skipped == 4
+
+
+@pytest.mark.parametrize(
+    ("source_domain", "source_file", "source_label"),
+    [
+        ("work", "private-work-file", "work"),
+        ("life", "private-life-file", "life"),
+    ],
+)
+def test_career_source_labels_match_incremental_policy_without_file_ids_in_logs(
+    caplog, source_domain, source_file, source_label,
+):
+    class Backend:
+        def __init__(self):
+            self.messages = []
+
+        def complete_json(self, task, messages, schema):
+            self.messages.append((task, messages))
+            return {"summary": "요약", "feedback": ["피드백"], "evidence": []}
+
+    fake = FakeDynalist()
+    fake.add_doc(source_file)
+    fake.add_doc("private-career-file")
+    if source_domain == "life":
+        recent = int(
+            datetime(2026, 11, 14, 15, tzinfo=ZoneInfo("UTC")).timestamp() * 1000
+        )
+        fake.add(source_file, "root", "최근 생활 기록", created=recent, modified=recent)
+    else:
+        fake.add(source_file, "root", "업무 기록")
+    fake.add("private-career-file", "root", "오래된 커리어 관찰")
+
+    settings = Settings()
+    settings.domains[source_domain].file_ids = [source_file]
+    settings.domains["career"].file_ids = ["private-career-file"]
+    settings.domains["career"].source_domains = [source_domain]
+    indices = {file_id: _index(fake, file_id) for file_id in fake.docs}
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-15','now','running')"
+    ).lastrowid
+    backend = Backend()
+
+    with caplog.at_level(logging.INFO, logger="tutorbot.engine.domains"):
+        process_domains(
+            conn,
+            indices,
+            settings,
+            LLMClient(backend=backend, conn=conn, run_id=run_id),
+            run_id=run_id,
+            run_date="2026-11-15",
+        )
+
+    career_message = next(
+        messages for task, messages in backend.messages
+        if task == "domain_feedback" and "도메인: career" in messages[-1]["content"]
+    )
+    if source_domain == "work":
+        assert "업무 기록" in career_message[-1]["content"]
+    else:
+        assert "최근 생활 기록" in career_message[-1]["content"]
+
+    domain_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "domain analysis" in record.getMessage() or "life source" in record.getMessage()
+    ]
+    assert any(
+        f"domain_id=career source_ids=['{source_label}'] target_id=career" in message
+        for message in domain_logs
+    )
+    assert any(
+        "life source domain_id=career source_id=life target_id=career" in message
+        for message in domain_logs
+    ) == (source_domain == "life")
+    assert all(
+        source_file not in message and "private-career-file" not in message
+        for message in domain_logs
+    )
 
 
 def test_career_uses_work_when_life_has_no_recent_changes_and_warns(caplog):
@@ -386,7 +474,7 @@ def test_career_uses_work_when_life_has_no_recent_changes_and_warns(caplog):
     assert "오래된 생활 기록" not in career_input
     assert any("career/life-doc: no life changes" in warning for warning in report.warnings)
     assert (
-        "life source domain_id=career source_id=life-doc target_id=career-doc "
+        "life source domain_id=career source_id=life target_id=career "
         "cutoff=2026-11-19T00:00:00+09:00 changed_nodes=0 result=skipped"
     ) in caplog.text
     assert "domain analysis succeeded domain_id=career" in caplog.text

@@ -164,6 +164,7 @@ def _default_domains() -> dict[str, DomainProfileCfg]:
         "life": DomainProfileCfg(),
         "career": DomainProfileCfg(source_domains=["work", "life"]),
         "personal_tasks": DomainProfileCfg(),
+        "devlog": DomainProfileCfg(),
     }
 
 

@@ -340,3 +340,83 @@ def run_pipeline(
             ),
         )
         return RunResult(run_id=run_id, run_date=r_date, status=final_status, stats=stats, errors=errors)
+
+
+def save_devlog_run_log(
+    conn: sqlite3.Connection,
+    settings: Any,
+    dynalist: DynalistClient,
+    *,
+    run_id: int,
+    run_date: str,
+    run_time: str,
+    log_text: str,
+) -> WriteReport:
+    """Enqueue and flush one captured run log in each configured devlog document."""
+    from .dynalist.writer import enqueue_op
+
+    profile = getattr(settings, "domains", {}).get("devlog")
+    if profile is None or not getattr(profile, "enabled", False):
+        return WriteReport()
+
+    report = WriteReport()
+    for file_id in dict.fromkeys(getattr(profile, "file_ids", [])):
+        index = NodeIndex.from_doc_read(file_id, dynalist.doc_read(file_id))
+        date_content = f"!({run_date})"
+        date_key = f"devlog-run-date:{file_id}:{run_date}"
+        date_marker = f"tb:devlog_log_date:{file_id}:{run_date}"
+        registered = {
+            row["node_id"]: row["kind"]
+            for row in conn.execute(
+                "SELECT node_id,kind FROM bot_node WHERE file_id=? AND deleted_at IS NULL",
+                (file_id,),
+            )
+        }
+        date_node = next(
+            (
+                node for node in index.walk()
+                if node.content == date_content
+                and (
+                    registered.get(node.id) == "devlog_log_date"
+                    or ((node.note or "").lstrip().splitlines() or [""])[0].strip() == date_marker
+                )
+            ),
+            None,
+        )
+        conn.execute("BEGIN")
+        try:
+            if date_node is not None:
+                date_parent_ref = f"node:{date_node.id}"
+            else:
+                enqueue_op(
+                    conn,
+                    run_id=run_id,
+                    op_key=date_key,
+                    file_id=file_id,
+                    action="insert",
+                    parent_ref="node:root",
+                    idx=-1,
+                    payload={"content": date_content},
+                    bot_kind="devlog_log_date",
+                    marker=date_marker,
+                )
+                date_parent_ref = f"op:{date_key}"
+            run_marker = f"tb:devlog_log_time:{file_id}:{run_date}:{run_time}"
+            enqueue_op(
+                conn,
+                run_id=run_id,
+                op_key=f"devlog-run-log:{file_id}:{run_date}:{run_time}",
+                file_id=file_id,
+                action="insert",
+                parent_ref=date_parent_ref,
+                idx=-1,
+                payload={"content": run_time, "note": log_text},
+                bot_kind="devlog_log_time",
+                marker=run_marker,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    return flush_outbox(conn, dynalist)

@@ -60,3 +60,9 @@ file_ids = ["<study document id>"]
 # status_nodes = ["Backlog", "InProgress", "FastTrack", "Completed", "Abandon"]
 # rules = ["Keep feedback short and evidence-based."]
 # output_format = "feedback_json"
+#
+# Devlog stores run logs and gives feedback on recently changed user comments.
+# It is not used as a general learning/source document.
+# [domains.devlog]
+# enabled = true
+# file_ids = ["<devlog document id>"]

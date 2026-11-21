@@ -366,6 +366,121 @@ def _messages(
     ]
 
 
+def _process_devlog_comments(
+    conn: sqlite3.Connection,
+    file_id: str,
+    index: NodeIndex,
+    profile: DomainProfileCfg,
+    settings: Settings,
+    llm: LLMClient,
+    *,
+    run_id: int,
+    run_date: str,
+    cutoff: datetime,
+    bot_tag: str,
+    report: DomainReport,
+) -> None:
+    registry = {
+        row["node_id"]: row["kind"]
+        for row in conn.execute(
+            "SELECT node_id,kind FROM bot_node WHERE file_id=? AND deleted_at IS NULL",
+            (file_id,),
+        )
+    }
+    classifier = Classifier(index, settings.tags, registry)
+    for node in _recent_user_nodes(index, classifier.is_bot, cutoff):
+        source_text = "\n".join(
+            part for part in (
+                f"코멘트: {node.content.strip()}" if node.content.strip() else "",
+                f"노트: {node.note.strip()}" if node.note.strip() else "",
+            ) if part
+        ).strip()
+        if not source_text:
+            continue
+        normalized = " ".join(source_text.split())
+        source_hash = "v1:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        state_domain_id = f"devlog:{node.id}"
+        previous = conn.execute(
+            "SELECT source_hash,status FROM domain_state WHERE domain_id=? AND file_id=?",
+            (state_domain_id, file_id),
+        ).fetchone()
+        if (
+            previous is not None
+            and previous["source_hash"] == source_hash
+            and previous["status"] == "processed"
+        ):
+            report.skipped += 1
+            continue
+        try:
+            result = llm.complete_json(
+                "domain_feedback",
+                _messages("devlog", source_text, profile),
+                _validate_feedback,
+                ref=f"devlog:{file_id}:{node.id}",
+            )
+        except Exception as exc:
+            message = f"devlog/{file_id}/{node.id}: analysis failed: {exc}"
+            report.errors.append(message)
+            now = clock.now_iso()
+            conn.execute(
+                "INSERT INTO domain_state(domain_id,file_id,source_hash,status,last_error,updated_at)"
+                " VALUES(?,?,?,'error',?,?) ON CONFLICT(domain_id,file_id) DO UPDATE SET "
+                "source_hash=excluded.source_hash,status='error',last_error=excluded.last_error,"
+                "updated_at=excluded.updated_at",
+                (state_domain_id, file_id, source_hash, str(exc), now),
+            )
+            conn.execute(
+                "INSERT INTO domain_run(run_id,domain_id,file_id,status,source_hash,error,created_at)"
+                " VALUES(?,'devlog',?,'error',?,?,?)",
+                (run_id, file_id, source_hash, str(exc), now),
+            )
+            continue
+
+        summary = " ".join(result["summary"].split()).replace("\n", " ")[:60].strip()
+        if not summary:
+            summary = "기록 피드백"
+        note_lines = [item for item in result["feedback"] if item]
+        if result["evidence"]:
+            note_lines.append("근거: " + "; ".join(result["evidence"]))
+        marker = f"tb:domain_feedback:devlog:{node.id}:{source_hash[3:19]}"
+        op_key = f"domain-feedback:devlog:{file_id}:{node.id}:{source_hash}"
+        now = clock.now_iso()
+        conn.execute("BEGIN")
+        try:
+            enqueue_op(
+                conn,
+                run_id=run_id,
+                op_key=op_key,
+                file_id=file_id,
+                action="insert",
+                parent_ref=f"node:{node.id}",
+                idx=-1,
+                payload={
+                    "content": f"{summary} !({run_date}) #{bot_tag}",
+                    "note": "\n".join(note_lines),
+                },
+                bot_kind="domain_feedback",
+                marker=marker,
+            )
+            conn.execute(
+                "INSERT INTO domain_state(domain_id,file_id,source_hash,feedback_json,status,last_error,updated_at)"
+                " VALUES(?,?,?,?,'processed',NULL,?) ON CONFLICT(domain_id,file_id) DO UPDATE SET "
+                "source_hash=excluded.source_hash,feedback_json=excluded.feedback_json,"
+                "status='processed',last_error=NULL,updated_at=excluded.updated_at",
+                (state_domain_id, file_id, source_hash, json.dumps(result, ensure_ascii=False), now),
+            )
+            conn.execute(
+                "INSERT INTO domain_run(run_id,domain_id,file_id,status,source_hash,error,created_at)"
+                " VALUES(?,'devlog',?,'processed',?,NULL,?)",
+                (run_id, file_id, source_hash, now),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        report.processed += 1
+
+
 def process_domains(
     conn: sqlite3.Connection,
     indices: dict[str, NodeIndex],
@@ -392,6 +507,24 @@ def process_domains(
         if domain_id == "study" or not profile.enabled or not profile.file_ids:
             continue
         target_ids = list(dict.fromkeys(profile.file_ids))
+        if domain_id == "devlog":
+            for file_id in target_ids:
+                index = indices.get(file_id)
+                if index is None:
+                    message = f"devlog/{file_id}: feedback document was not read"
+                    report.errors.append(message)
+                    conn.execute(
+                        "INSERT INTO domain_run(run_id,domain_id,file_id,status,error,created_at)"
+                        " VALUES(?, 'devlog', ?, 'error', ?, ?)",
+                        (run_id, file_id, message, clock.now_iso()),
+                    )
+                    continue
+                _process_devlog_comments(
+                    conn, file_id, index, profile, settings, llm,
+                    run_id=run_id, run_date=run_date, cutoff=cutoff,
+                    bot_tag=bot_tag, report=report,
+                )
+            continue
         source_ids = _profile_sources(domain_id, profile, profiles)
         if not source_ids:
             message = f"{domain_id}: no configured source documents"

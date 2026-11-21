@@ -13,7 +13,7 @@ from tutorbot.dynalist.tree import NodeIndex
 from tutorbot.dynalist.writer import enqueue_op, flush_outbox
 from tutorbot.llm.client import LLMClient
 from tutorbot.parse.classify import DEFAULT_TAGS
-from tutorbot.pipeline import run_pipeline
+from tutorbot.pipeline import run_pipeline, save_devlog_run_log
 
 F = "doc1"
 
@@ -34,6 +34,49 @@ def test_outbox_write_logs_file_and_returned_node_id(caplog):
     assert report.done == 1
     assert f"file_id={F}" in caplog.text
     assert f"result_node_id={result_id}" in caplog.text
+
+
+def test_devlog_run_log_creates_date_and_time_nodes_and_reconciles(tmp_path):
+    fk = FakeDynalist()
+    fk.add_doc("devlog")
+    conn = db.connect(":memory:")
+    db.migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+    settings = make_settings(tmp_path)
+    settings.domains["devlog"] = SimpleNamespace(enabled=True, file_ids=["devlog"])
+    client = DynalistClient("tok", transport=fk, sleep=lambda _: None)
+    original_log = "INFO first line\nERROR second line\n"
+
+    fk.crash_after_apply("doc/edit")
+    failed = save_devlog_run_log(
+        conn, settings, client, run_id=run_id, run_date="2026-11-20",
+        run_time="07:55:39", log_text=original_log,
+    )
+    assert failed.errors
+    recovered = save_devlog_run_log(
+        conn, settings, client, run_id=run_id, run_date="2026-11-20",
+        run_time="07:55:39", log_text=original_log,
+    )
+
+    index = NodeIndex.from_doc_read("devlog", fk._doc_read({"file_id": "devlog"}))
+    date_nodes = [node for node in index.walk() if node.content == "!(2026-11-20)"]
+    assert len(date_nodes) == 1
+    time_nodes = index.children_of(date_nodes[0].id)
+    assert len(time_nodes) == 1
+    assert time_nodes[0].content == "07:55:39"
+    assert original_log in time_nodes[0].note
+    bot_kinds = {
+        row["kind"] for row in conn.execute(
+            "SELECT kind FROM bot_node WHERE file_id='devlog'"
+        )
+    }
+    assert bot_kinds == {"devlog_log_date", "devlog_log_time"}
+    assert recovered.done == 2
+    assert conn.execute(
+        "SELECT COUNT(*) FROM write_op WHERE op_key LIKE 'devlog-run-%'"
+    ).fetchone()[0] == 2
 
 
 def test_outbox_failure_log_does_not_expose_exception_credentials(caplog):

@@ -7,15 +7,17 @@ import logging
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import db
 from .config import load_settings
 from .dynalist.client import DynalistClient, DynalistError
 from .dynalist.tree import NodeIndex
 from .llm.client import LLMClient, LLMError
-from .pipeline import run_pipeline
+from .pipeline import run_pipeline, save_devlog_run_log
 
 
 def _configure_logging(settings=None) -> Path:
@@ -216,6 +218,10 @@ def _llm_test(settings, client=None):
 
 def cmd_run(args, settings) -> int:
     log_file = _configure_logging(settings)
+    try:
+        log_start = log_file.stat().st_size
+    except OSError:
+        log_start = 0
     logger = logging.getLogger(__name__)
     logger.info(
         "Run started: date=%s dry_run=%s fake_llm=%s",
@@ -266,6 +272,55 @@ def cmd_run(args, settings) -> int:
         logger.exception("Run aborted")
         raise
     _log_run_result(res)
+    if not args.dry_run:
+        for handler in logging.getLogger("tutorbot").handlers:
+            handler.flush()
+        try:
+            with log_file.open("rb") as stream:
+                stream.seek(log_start)
+                run_log = stream.read().decode("utf-8")
+        except (OSError, UnicodeError):
+            run_log = ""
+            logger.warning("Could not read the current run's log segment for devlog")
+        if not run_log:
+            logger.warning("Current run log segment is empty; devlog run log was not saved")
+        elif getattr(settings, "domains", {}).get("devlog") is not None:
+            now = datetime.now(ZoneInfo("Asia/Seoul"))
+            try:
+                devlog_write = save_devlog_run_log(
+                    conn,
+                    settings,
+                    cl,
+                    run_id=res.run_id,
+                    run_date=res.run_date,
+                    run_time=now.strftime("%H:%M:%S"),
+                    log_text=run_log,
+                )
+                res.stats["devlog_run_log"] = {
+                    "done": devlog_write.done,
+                    "reconciled": devlog_write.reconciled,
+                    "failed": devlog_write.failed,
+                }
+                if devlog_write.errors or devlog_write.failed:
+                    res.errors.extend(devlog_write.errors or ["devlog run log write failed"])
+                    res.status = "partial"
+                conn.execute(
+                    "UPDATE run_log SET status=?,error_summary=?,dynalist_changes=dynalist_changes+? WHERE id=?",
+                    (
+                        res.status,
+                        "; ".join(res.errors) if res.errors else None,
+                        devlog_write.changes_sent,
+                        res.run_id,
+                    ),
+                )
+            except Exception:
+                logger.exception("Devlog run log write failed")
+                res.errors.append("devlog run log write failed")
+                res.status = "partial"
+                conn.execute(
+                    "UPDATE run_log SET status='partial',error_summary=? WHERE id=?",
+                    ("; ".join(res.errors), res.run_id),
+                )
     print(f"Run {res.run_id} ({res.run_date}): {res.status}; log: {log_file}")
     return 0 if res.status in ("ok", "partial") else 1
 

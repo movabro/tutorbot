@@ -210,6 +210,132 @@ insert payload는 기존 JSON 구조를 유지하되 content는 한 줄의 요�
 
 ---
 
+# Devlog 실행 로그 및 코멘트 피드백 명세
+
+## 목표 및 범위
+
+`devlog`를 설정 가능한 비학습 도메인으로 추가하고, `tutorbot run`의 실행 로그와 devlog 문서의 사용자 코멘트를 같은 Dynalist 문서에서 관리한다.
+
+- 설정 대상 문서 ID: `TZ9DVqlTaO5vYR825vdSkhq0`
+- 실행 로그: 날짜 노드 `!(YYYY-MM-DD)` 아래 `HH:mm:ss` 노드를 만들고, 해당 실행 구간의 `logs/tutorbot.log` 신규 기록 전체를 시간 노드의 note에 저장한다.
+- 코멘트 피드백: 사용자가 작성한 코멘트 각각을 `domain_feedback` 작업으로 분석하고 자식 피드백 노드를 생성한다.
+- 실행 로그 노드와 자동 피드백은 `bot_node`에 각각의 bot kind로 등록해 사용자 코멘트 분석 대상에서 제외한다.
+- 기존 일반 도메인 분석, `run`, `--dry-run`, outbox 동작을 유지한다. devlog Dynalist 쓰기는 실제 실행에서만 한다.
+- 재실행·재시도 시 op_key와 기존 bot_node/marker reconciliation으로 같은 실행 로그 및 코멘트 피드백의 중복 생성을 방지한다.
+- 코드 변경 범위의 설계만 정의한다. DB 스키마 추가는 우선 요구하지 않는다.
+
+## 현재 구조 및 의존성
+
+- `config.py`의 `_default_domains()`가 허용 도메인 이름을 고정한다. 현재 모르는 도메인은 설정 검증에서 거부된다.
+- `cli.py`가 `logs/tutorbot.log`를 구성하고 `cmd_run()`에서 실행 요약을 로깅한다. `_configure_logging()`은 기존 핸들러를 교체하며 파일 로그는 append 모드이다.
+- `pipeline.py`가 활성 도메인 파일을 읽고, `process_domains()`를 호출한 뒤 실제 실행에서 `flush_outbox()`를 실행한다. dry-run은 DB 복사본과 pending op 요약만 사용한다.
+- `engine/domains.py`는 도메인 프로필의 입력을 `domain_feedback` LLM 작업으로 분석하고, `domain_state`, `domain_run`, `write_op`에 기록한다. 현재 일반 도메인 처리는 문서 단위 상태 키를 사용하므로 코멘트 단위 dedupe는 별도 식별이 필요하다.
+- `writer.py`는 UNIQUE `write_op.op_key`, marker 기반 insert reconciliation, insert 성공 후 `bot_node` 등록을 제공한다. marker는 실제 Dynalist 노드 note의 첫 줄에 들어간다.
+- `NodeIndex`와 `Classifier`는 문서 트리 및 bot subtree 판별에 재사용 가능하다.
+
+## 입출력 인터페이스 및 데이터 구조
+
+### 설정
+
+- `Settings.domains`에 `devlog` 프로필을 등록한다. `config.toml`은 `enabled = true`, `file_ids = ["TZ9DVqlTaO5vYR825vdSkhq0"]`를 설정한다.
+- `config.example.toml`에는 동일한 도메인 구조와 설명을 추가하되, 실제 개인 문서 ID 대신 placeholder를 사용한다.
+- devlog는 일반 도메인 프로필 허용 목록 및 pipeline의 문서 수집에는 포함하되 기존 source 문서 요약 대상에서는 제외한다. 댓글 처리와 실행 로그 저장은 devlog 전용 흐름으로 다룬다.
+
+### Dynalist 노드
+
+- 날짜 노드: root 직계 자식, content `!(YYYY-MM-DD)`, kind `devlog_run_date`.
+- 실행 노드: 날짜 노드의 자식, content `HH:mm:ss` (24시간제, Asia/Seoul), kind `devlog_run_log`. note는 고정된 실행 로그 marker 한 줄 뒤에 해당 실행 구간 로그 전체를 원문 그대로 보존한다. marker를 제외한 로그 부분의 줄·문자열을 잘라내거나 요약하지 않는다.
+- 피드백 노드: 사용자 코멘트의 자식, kind `domain_feedback`. content는 짧은 요약과 `!(YYYY-MM-DD)`를 포함하고, note는 구체적인 피드백을 담는다. writer marker가 note 첫 줄에 추가되며 실제 피드백 본문은 그 뒤에 보존한다.
+- 자동 날짜/실행/피드백 노드와 각 자동 노드의 하위 트리는 `bot_node` 등록 및 `Classifier`를 통해 사용자 입력에서 제외한다. kind는 용도를 식별할 수 있도록 고정하고, run 로그 kind와 `domain_feedback` kind를 서로 구분한다.
+
+### 중복 키와 상태
+
+- 실행 로그 op_key는 devlog file ID, 날짜, `HH:mm:ss` 실행 노드 식별 정보를 사용한 결정적 값으로 만든다. 날짜 노드 op_key는 file ID와 날짜를 사용한다. 날짜 노드가 이미 문서에 있으면 재사용하고, 없으면 시간 노드 op가 날짜 노드 op를 참조하도록 한다.
+- 기존 outbox UNIQUE 제약과 marker reconciliation을 사용한다. 응답 유실 후 재실행하면 동일 marker의 노드를 reconcile하고 추가 insert를 하지 않는다.
+- 코멘트 입력은 봇이 아닌 사용자 코멘트 노드의 content/note를 정규화해 해시한다. 코멘트 ID와 source hash를 포함한 결정적 op_key를 사용한다. 동일 코멘트·동일 hash의 완료 상태는 재호출하지 않는다. 기존 `domain_state(domain_id, file_id)`를 쓸 경우 코멘트 ID별 domain key로 구분하고, source hash가 바뀐 경우에만 재분석한다.
+- 코멘트 피드백 marker는 도메인, 코멘트 node ID, source hash를 포함해 서로 다른 코멘트/버전 간 reconcile 오인을 방지한다. `bot_ref_id`는 SQLite 정수형이므로 Dynalist node ID를 그대로 담지 않는다. 코멘트 ID는 op_key/domain key로 식별한다.
+- 피드백 노드가 성공적으로 등록된 후에는 `bot_node`를 기준으로 후속 실행에서 자동 생성 노드로 제외한다. 새 코멘트의 판정 정책은 실행 시점 문서에서 비봇 노드를 대상으로 하며, 초기 활성화에서 오래된 사용자 기록까지 무제한 분석하지 않도록 `run_date`/기존 domain 정책에 맞는 신규·변경 범위를 명시적으로 제한한다.
+
+## 파일별 생성/수정 계획
+
+### `src/tutorbot/config.py`
+
+- `_default_domains()`에 `devlog` 프로필을 추가해 설정 검증에서 허용한다.
+- 별도 도메인 설정 필드를 추가하지 않고 기존 `enabled`, `file_ids` 구조를 재사용한다.
+
+### `src/tutorbot/cli.py`
+
+- 실제 `cmd_run()`에서 최종 설정의 log path를 적용한 뒤 실행 구간의 시작 위치(byte offset 또는 동등한 안정적 경계)를 기억한다.
+- 실행 요약까지 기록·flush한 후 시작 위치부터 현재 EOF까지의 신규 로그를 UTF-8로 읽어 pipeline/devlog 처리에 전달한다. 설정 로딩 이전의 다른 실행이나 기존 파일 내용은 포함하지 않는다.
+- 로그 기록이 비어 있거나 파일이 없거나 읽기에 실패한 경우를 기록하고 실행을 조용히 중단하지 않도록 처리한다. 로그 본문을 콘솔 출력 또는 예외 메시지에 중복 노출하지 않는다.
+- `--dry-run`에서는 devlog에 대한 Dynalist write op 생성·flush를 하지 않는다. 기존의 다른 dry-run 동작과 임시 DB 사용은 그대로 둔다.
+
+### `src/tutorbot/engine/domains.py`
+
+- 코멘트 단위 입력 추출/해시/LLM 처리를 추가한다. `Classifier.is_bot()`이 true인 노드와 그 subtree, 설정된 bot tag/marker가 있는 노드는 제외한다.
+- 사용자 코멘트별로 기존 `domain_feedback` prompt와 `_validate_feedback()`를 재사용한다. 결과 content는 길이를 제한한 단일 줄 요약 + `!(run_date)`로 만들고, note에는 feedback 항목과 evidence를 보존한다.
+- 코멘트마다 독립된 domain state 처리와 결정적 op_key/marker를 사용한다. 같은 source hash의 processed 상태라면 LLM 호출과 enqueue를 건너뛴다.
+- 실행 로그를 쓸 때도 도메인 전용 helper를 두어 날짜 노드와 시간 노드를 outbox에 enqueue한다. 날짜 노드를 탐색할 때 날짜 content만으로 임의의 사용자가 작성한 노드를 봇 노드로 간주하지 말고, 기존 bot_node 등록 또는 고유 marker를 함께 확인한다.
+- 다중 file ID 설정도 지원하며 각 문서별로 독립적인 op_key와 상태를 사용한다.
+
+### `src/tutorbot/pipeline.py`
+
+- 현재 활성 도메인 파일 ID 수집으로 devlog 문서를 읽는다.
+- 일반 `process_domains()`에서 devlog를 제외하고, 전용 코멘트/실행로그 처리는 기존 outbox 처리 및 dry-run 경계와 연결한다.
+- 실행 로그 캡처 텍스트와 실행 날짜/시간을 전용 처리에 전달한다. 로그 노드 쓰기 및 코멘트 피드백 쓰기는 실제 run의 outbox 흐름에 연결해 기존 중복 실행 lock과 보고 통계를 유지한다.
+- run 시작 전 잔여 op flush는 유지한다. 실행 로그의 최종 텍스트가 완성되는 시점과 outbox 처리 순서를 정해 현재 run에서 생성된 로그 전체가 누락되지 않도록 한다.
+
+### `src/tutorbot/dynalist/writer.py`
+
+- 기존 enqueue, marker, crash-reconciliation, bot_node 등록 기능을 재사용한다.
+- devlog 로그/피드백의 `bot_kind` 등록과 marker가 실제 재시도에서도 node kind에 맞게 보존되는지 확인한다. 기존 marker-only 매칭이 동일 parent 아래의 서로 다른 op를 구별할 수 있도록 각 marker에 날짜·시간 또는 comment ID/source hash를 포함한다.
+- 변경이 필요한 경우에만 marker와 content/parent를 함께 검증하도록 `_reconcile_insert()`를 좁게 보강한다. 일반 outbox 동작이나 다른 도메인 작업의 중복 방지를 변경하지 않는다.
+
+### `config.toml`, `config.example.toml`
+
+- 실제 설정에 `[domains.devlog]`, `enabled = true`, `file_ids = ["TZ9DVqlTaO5vYR825vdSkhq0"]`를 추가한다.
+- 예시 설정에는 `[domains.devlog]`와 placeholder ID를 추가한다.
+
+### 테스트
+
+- `tests/test_cli_logging.py`: 실행 구간 시작 offset, 기존 로그 제외, 신규 기록 전체 전달, 예외/빈 로그 처리, dry-run에서 devlog 미기록을 검증한다.
+- `tests/test_domains.py`: devlog 설정 파싱, 날짜/시간 계층, note payload, 시간 형식, user comment별 Gemini `domain_feedback`, summary/date 및 구체 feedback note, bot subtree 제외, 동일 hash 재실행 skip을 검증한다.
+- `tests/test_m2.py`: devlog insert outbox의 bot kind 등록, marker reconciliation 및 응답 유실 후 중복 노드 없음, 날짜 노드 재사용과 시간 노드 고유성을 검증한다.
+- 필요하면 `tests/test_domains.py`의 pipeline 테스트를 확장해 devlog 문서가 읽히고 기존 study/work/life/career 처리에 영향을 주지 않는지 확인한다.
+
+## 엣지 케이스 및 검증 기준 (Acceptance Criteria)
+
+### 설정과 실행 경계
+
+- `Settings.model_validate()`가 devlog를 수락하고 설정된 ID가 pipeline 읽기 목록에 정확히 한 번 포함된다.
+- 동일 ID가 다른 도메인에도 설정돼 있으면 문서 read는 dedupe되고 devlog write routing은 devlog 설정에 따라 동작한다.
+- 이전 로그 파일 내용은 해당 run 기록에 포함되지 않고, run 시작 경계 이후의 모든 로그 레코드는 누락·절단 없이 note에 포함된다.
+- `run --dry-run` 및 실패한 설정 로딩은 devlog 문서를 수정하지 않는다. 실제 `run`만 Dynalist write를 수행한다.
+
+### 트리와 payload
+
+- 날짜 노드 content가 정확히 `!(YYYY-MM-DD)`이고 시간 노드가 그 날짜 노드의 자식이며 content는 `HH:mm:ss` 형식이다.
+- 실행 시간 노드 note에 marker 이후 실행 중 새로 생성된 로그 전체가 포함된다.
+- 날짜 노드가 이미 있으면 중복 날짜 노드를 만들지 않는다. 같은 날짜·시간의 재시도/재실행은 중복 시간 노드를 만들지 않는다.
+- 코멘트 피드백 노드는 해당 사용자 코멘트 아래에만 생성되고, content는 개행 없는 짧은 요약과 실행 날짜를 포함하며, note는 구체 피드백/evidence를 보존한다.
+- bot kind에 등록된 날짜·실행·피드백 노드와 그 subtree는 Gemini 입력에 들어가지 않는다. 사용자가 작성한 코멘트만 별도 입력으로 전달된다.
+
+### 멱등성/복구
+
+- 같은 코멘트 ID와 source hash를 재실행해도 추가 LLM 호출 또는 추가 피드백 op가 없다.
+- 동일한 실행 로그 op_key가 다시 enqueue되면 새 op를 만들지 않는다.
+- Dynalist 응답 유실 후 writer가 marker로 기존 날짜/시간/피드백 노드를 reconcile하고 중복 insert를 하지 않는다.
+- 서로 다른 코멘트 ID 또는 실행 시각의 marker/op_key가 충돌하지 않는다.
+- devlog write 실패는 기존 run 결과/오류 보고에 반영하며, 실패를 숨기거나 성공으로 표시하지 않는다.
+
+### 테스트 실행 기준
+
+- 우선: `pytest tests/test_cli_logging.py tests/test_domains.py tests/test_m2.py -q`
+- 회귀 확인: `pytest -q`
+- 프로젝트에 적용되는 lint를 수행했다면 해당 검사도 통과해야 한다.
+
+---
+
 # Study 문서 ID 설정 이전 — 변경 지점 및 테스트 계획
 
 ## 목표 및 범위

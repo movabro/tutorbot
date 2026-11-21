@@ -59,7 +59,8 @@ def test_domain_settings_read_study_documents_from_study_profile(tmp_path):
         '[domains.study]\nenabled = true\nfile_ids = ["study-doc"]\n'
         '[domains.work]\nfile_ids = ["work-doc"]\ntags = ["project"]\n'
         '[domains.career]\nfile_ids = ["career-doc"]\n'
-        '[domains.personal_tasks]\ntracking_tag_aliases = ["Task"]\n',
+        '[domains.personal_tasks]\ntracking_tag_aliases = ["Task"]\n'
+        '[domains.devlog]\nenabled = true\nfile_ids = ["devlog-doc"]\n',
         encoding="utf-8",
     )
     settings = load_settings(path, dotenv_path=path.with_suffix(".env"))
@@ -70,6 +71,8 @@ def test_domain_settings_read_study_documents_from_study_profile(tmp_path):
     assert settings.domains["career"].source_domains == ["work", "life"]
     assert settings.domains["personal_tasks"].tracking_tag == "Track"
     assert settings.domains["personal_tasks"].tracking_tag_aliases == ["Task"]
+    assert settings.domains["devlog"].enabled
+    assert settings.domains["devlog"].file_ids == ["devlog-doc"]
 
 
 def test_legacy_dynalist_file_ids_are_not_supported(tmp_path, monkeypatch):
@@ -803,3 +806,66 @@ def test_pipeline_keeps_work_document_out_of_study_ingest(tmp_path):
     assert result.status == "ok"
     assert conn.execute("SELECT COUNT(*) FROM study_entry").fetchone()[0] == 0
     assert any("🤖 work 피드백" in node["content"] for node in fake.docs["work-doc"].values())
+
+
+def test_devlog_feedback_is_per_recent_user_comment_and_idempotent():
+    class Backend:
+        def __init__(self):
+            self.messages = []
+
+        def complete_json(self, task, messages, schema):
+            self.messages.append(messages)
+            return {
+                "summary": "구체적인 다음 행동",
+                "feedback": ["측정 기준을 기록하세요."],
+                "evidence": ["현재 코멘트에 기준이 없습니다."],
+            }
+
+    fake = FakeDynalist()
+    fake.add_doc("devlog")
+    recent = int(datetime(2026, 11, 19, 10, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    old = int(datetime(2026, 11, 18, 10, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+    comment = fake.add(
+        "devlog", "root", "배포 자동화를 개선한다", "이번 주에 먼저 검증",
+        created=recent, modified=recent,
+    )
+    fake.add("devlog", "root", "오래된 의견", created=old, modified=old)
+    bot = fake.add(
+        "devlog", "root", "자동 로그", "tb:devlog_log_time:devlog:2026-11-20:10:00:00",
+        created=recent, modified=recent,
+    )
+    fake.add("devlog", bot, "자동 로그 자식", created=recent, modified=recent)
+    settings = Settings()
+    settings.domains["devlog"].file_ids = ["devlog"]
+    conn = connect(":memory:")
+    migrate(conn)
+    run_id = conn.execute(
+        "INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-20','now','running')"
+    ).lastrowid
+    backend = Backend()
+    llm = LLMClient(backend=backend)
+    indices = {"devlog": _index(fake, "devlog")}
+
+    first = process_domains(
+        conn, indices, settings, llm, run_id=run_id, run_date="2026-11-20",
+    )
+    second = process_domains(
+        conn, indices, settings, llm, run_id=run_id, run_date="2026-11-20",
+    )
+
+    assert first.processed == 1
+    assert second.skipped == 1
+    assert len(backend.messages) == 1
+    assert "배포 자동화를 개선한다" in backend.messages[0][-1]["content"]
+    assert "오래된 의견" not in backend.messages[0][-1]["content"]
+    assert "자동 로그" not in backend.messages[0][-1]["content"]
+    row = conn.execute(
+        "SELECT parent_ref,payload_json,bot_kind,marker FROM write_op"
+    ).fetchone()
+    payload = json.loads(row["payload_json"])
+    assert row["parent_ref"] == f"node:{comment}"
+    assert row["bot_kind"] == "domain_feedback"
+    assert row["marker"].startswith(f"tb:domain_feedback:devlog:{comment}:")
+    assert payload["content"] == "구체적인 다음 행동 !(2026-11-20) #tutorbot"
+    assert "측정 기준을 기록하세요." in payload["note"]
+    assert "근거: 현재 코멘트에 기준이 없습니다." in payload["note"]

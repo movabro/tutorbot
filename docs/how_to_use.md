@@ -149,16 +149,218 @@ Abandon
 
 ### 향후 피드백 규칙과 페르소나 초안
 
-아래 파일은 **사용자가 향후 요구사항을 작성하기 위한 미구현 설계 예시**입니다. 현재 읽히거나 실행되지 않으므로 `config.toml`에 복사해도 동작하지 않습니다. 특히 기존 `[domains.*]`에 새 필드를 넣으면 설정 검증 오류가 발생할 수 있습니다.
+> **중요 — 미구현 제안입니다.** 아래 규칙과 설명서는 현재 동작하는 기능이 아니라 향후 구현 방향만 설명합니다. 현재 설정 로더, TOML 파서 및 스케줄러는 이 형식을 지원하지 않습니다. 이 내용을 `config.toml`에 복사하거나 실행해도 작동하지 않으며, 이를 활성화하거나 검증하는 명령도 없습니다. 기존 `[domains.*]`에 필드를 추가하면 현재 설정 검증 오류가 발생할 수도 있습니다.
 
-- [피드백 규칙 TOML 초안](templates/feedback-rules.example.toml): 타겟별 대상·참조·출력, 태그와 시간 필터, 주기, 토큰 및 근거에 대한 제안입니다. 실제 문서·노드 ID와 출력 위치 등은 사용자가 결정해야 합니다.
+- [피드백 규칙 TOML 초안](templates/feedback-rules.example.toml): 피드백 작업별 선택 노드·참조·출력, 태그와 시간 필터, 주기, 토큰 및 근거에 대한 제안입니다. 실제 문서·노드 ID와 출력 위치 등은 사용자가 결정해야 합니다.
 - 페르소나 작성 템플릿: [학습](templates/personas/study.md), [업무](templates/personas/work.md), [일상](templates/personas/life.md), [커리어](templates/personas/career.md), [개인 과업](templates/personas/personal_tasks.md), [개발 로그](templates/personas/devlog.md).
 
-기존 `rules`와 `prompt`는 현재 도메인 프로필의 텍스트 지침이며, 위 TOML의 독립 타겟 및 Markdown 파일 경로는 별도 제안입니다. 기존 `tags`는 위에서 설명한 대로 필터가 아닙니다. 페르소나 파일 자동 로딩과 추천·사용자 승인 절차도 아직 구현되지 않았습니다. 템플릿의 출력 방향은 예시일 뿐이며 향후 확정될 공통 출력 JSON과 규칙이 우선합니다.
+#### 생각하는 방법과 설계 순서
 
-향후 `config.toml`을 별도 네임스페이스로 확장하면 기존 설정과 함께 관리하고 규칙을 버전 관리하기 쉽지만, 타겟이 많아지면 설정이 복잡해지고 스키마 검증·호환성·마이그레이션이 필요합니다. 이는 설계 선택지이지 구현이나 지원 약속이 아닙니다.
+먼저 `domain`과 피드백 작업을 구분하세요. 규칙 파일 하나에 `[[feedback_rules.targets]]`를 여러 번 써서 서로 독립된 작업을 여럿 정의할 수 있습니다. 이 초안에서는 TOML 항목을 `feedback_rules.targets`라고 부르며, 각 항목 하나가 목적, 소스, 결과 위치와 처리 방식을 갖춘 전체 지시 단위입니다.
 
-**개인정보 주의:** 실제 분석 시 문서 내용과 프롬프트 지침에 포함된 개인정보나 민감정보가 외부 LLM API 제공자에게 전달될 수 있습니다. 템플릿을 작성하거나 기존 `rules`·`prompt`를 설정할 때 필요한 정보만 사용하고 비밀 값은 넣지 마세요. `--dry-run`도 실제 API 호출을 막지는 않습니다.
+| 구분 | 의미 |
+|---|---|
+| `domain` | `study`, `career` 같은 분류·라벨로, “이 작업은 어떤 범주에 속하는가?”에 답합니다. 소스 문서를 선택하거나 입력·출력 문서를 정하지 않습니다. |
+| 피드백 작업 | `purpose`, `selection`, `references`, `output`, 처리 방식(`unit`, `schedule` 등)을 함께 정의한 작업 단위입니다. 실제 소스는 작업의 `selection`과 `references` 항목이 지정하고 결과 위치는 `output`이 지정합니다. |
+
+예를 들어 `domain = "career"`인 작업의 목적이 업무·학습·일상 기록을 커리어 목표와 비교하는 것이라면, `selection`에는 업무·학습·일상 문서를, 문맥으로만 읽을 커리어 목표 문서는 `references`에 지정하고, 결과는 커리어 문서에 쓰도록 `output`을 지정할 수 있습니다. 소스와 결과 문서는 작업의 `domain`과 다른 범주에 속해도 됩니다. 즉, “이 작업은 어떤 범주인가?”는 `domain`으로, “어떤 소스를 쓰고 어디에 결과를 둘 것인가?”는 각 작업의 `selection`·`references`·`output`으로 정합니다.
+
+입출력을 설계할 때 세 역할을 분리하세요.
+
+| 구역 | 역할 | 결과에 미치는 영향 |
+|---|---|---|
+| `selection` | 피드백을 받을 피드백 대상 노드를 선택합니다. | 선택된 노드가 실제 피드백 대상 노드입니다. 여러 선택 소스의 결과는 합집합입니다. |
+| `references` | 선택된 피드백 대상 노드를 이해하는 데 필요한 추가 문맥을 제공합니다. | 참고로 읽을 뿐, 그 자체로 피드백 대상 노드로 선택되지는 않습니다. |
+| `output` | 결과를 쓸 문서와 위치를 정합니다. | 입력 문서와 다를 수 있으며, 출력 위치를 명시적으로 설계합니다. |
+
+실무 설계는 다음 순서로 진행하는 편이 명확합니다.
+
+1. 해결하려는 문제와 결과물을 정하고, 피드백 작업의 `id`, `purpose`, 분류용 `domain`을 구상합니다.
+2. 실제 피드백 대상이 될 노드만 `selection`에 둡니다. 여러 선택 소스 문서나 소스 범위를 넣으면 결과가 합쳐지는 점을 고려하고, 피드백 대상 노드가 하나도 선택되지 않는 경우도 점검합니다.
+3. 목표·기록처럼 설명에 필요한 자료는 `references`에 따로 둡니다. 참고 자료를 피드백 대상 노드처럼 오해하지 않도록 역할을 구분합니다.
+4. `unit`, `schedule`, 시간대와 토큰 범위를 정하고, 결과를 어느 문서·부모에 둘지 `output`으로 설계합니다.
+5. 파일 및 노드 ID, 범위, 태그, 시간 조건, 출력 권한과 페르소나 파일 경로를 확인합니다. 예시의 자리표시자는 실제 ID가 아니며, 아래 예시를 운영 설정으로 복사하거나 실행해서는 안 됩니다.
+
+#### 피드백 작업 필드 참고표
+
+아래 의미는 템플릿이 제안하는 의미입니다. 이 형식에 대한 구현된 스키마나 실행 동작을 뜻하지 않습니다.
+
+| 필드 | 제안 의미와 작성 시 고려할 점 |
+|---|---|
+| `id` | 피드백 작업을 구별하기 위한 식별자입니다. 고유성 규칙이나 허용 문자는 정해져 있지 않습니다. |
+| `purpose` | 피드백 목적과 기대 결과를 사람이 이해할 수 있게 적습니다. |
+| `domain` | 피드백 작업의 분류입니다. 템플릿에는 `study`, `career` 같은 예가 있지만 허용되는 값의 전체 목록은 정해져 있지 않습니다. 입력 소스의 도메인과 같아야 한다는 뜻도 아닙니다. |
+| `persona_path` | 사용할 페르소나 문서 경로의 제안입니다. 경로는 설정 파일이 놓인 디렉터리를 기준으로 한 상대 경로로 제안되어 있습니다. 자동 로딩은 구현되지 않았습니다. |
+| `persona_approval` | 페르소나 적용 전 승인 정책의 제안입니다. 예시 값은 `user_approved_before_use`입니다. 승인·추천 절차는 구현되지 않았습니다. |
+| `unit` | 출력 단위 제안입니다. `per_node`는 선택 노드마다 하나씩, `aggregate`는 선택 결과를 모아 하나로 처리하는 방식입니다. |
+| `schedule` | 처리 주기 제안입니다. `each_run`은 실행마다, `daily`는 시간대 기준 현지 날짜별 처리입니다. 실제 스케줄러는 지원되지 않습니다. |
+| `timezone` | `daily`의 현지 날짜를 계산할 시간대 제안입니다. 템플릿 예시는 `Asia/Seoul`입니다. 일일 실행 시각은 정해져 있지 않습니다. |
+| `input_token_range` | 한 번의 호출에서 입력 토큰 수로 삼을 목표 범위입니다. 엄격한 상한이나 비용 한도가 아닙니다. |
+| `output_token_range` | 한 번의 호출에서 출력 토큰 수로 삼을 목표 범위입니다. 엄격한 상한이나 비용 한도가 아닙니다. |
+| `evidence` | 문서·노드 ID에 연결해 근거를 제시하고, 입력이 없거나 잘린 경우 이를 알리도록 하는 지침입니다. 출처를 검증하거나 근거의 정확성을 보증하는 기능은 아닙니다. |
+
+페르소나 경로를 작성할 때는 설정 파일의 위치를 기준으로 상대 경로를 구상하세요. `user_approved_before_use`는 템플릿의 승인 정책 예시일 뿐이며, 승인 요청·추천·동의 저장·승인 후 적용 중 어느 절차도 현재 구현되어 있지 않습니다.
+
+#### 선택·참조 소스 필드 참고표
+
+아래의 소스 설정은 `[[feedback_rules.targets.selection]]` 및 `[[feedback_rules.targets.references]]`에 제안된 항목입니다. `context_scope`는 `selection`에만 해당합니다.
+
+| 필드 | 적용 범위 | 제안 의미 |
+|---|---|---|
+| `file_id` | 선택·참조 | 읽을 Dynalist 문서의 ID입니다. 선택 소스 문서와 참조 문서는 피드백 작업의 결과 문서와 같을 수도, 다를 수도 있습니다. |
+| `parent_node_id` | 선택·참조 | 범위를 펼칠 기준 노드의 ID입니다. 실제 노드 ID로 바꿔야 합니다. |
+| `scope` | 선택·참조 | 기준 노드에서 읽을 범위입니다. `self`는 기준 노드 자체, `descendants`는 자손만, `self_and_descendants`는 기준 노드와 자손을 뜻합니다. |
+| `context_scope` | 선택만 | 선택된 각 피드백 대상 노드에 붙일 문맥의 범위를 세밀하게 제안합니다. 예시 `self_excluding_nested_goal_subtrees`는 해당 목표 자체와 문맥은 두되, 중첩된 다른 목표 및 그 하위 트리는 제외하는 의미입니다. |
+| `tags_any` | 선택·참조 | 목록의 태그 이름 중 하나 이상에 맞는 소스를 허용하는 제안입니다. `#` 기호는 빼고 적으며 `[]`는 태그 필터를 적용하지 않는다는 뜻입니다. |
+| `time` | 선택·참조 | 소스의 시간 조건입니다. 예시는 `created_last_24h`와 `fixed_context`입니다. |
+
+제안된 필터 의미는 다음과 같습니다.
+
+- 한 피드백 작업에 `selection` 소스가 여러 개면 각각 선택된 노드의 합집합을 피드백 대상 노드로 삼습니다. `references`는 문맥만 제공하며 피드백 대상 노드 집합에 더해지지 않습니다. 선택 결과가 비어 있으면 참고 자료가 있더라도 건너뛰는 안입니다.
+- `scope`는 각 소스의 `parent_node_id`를 기준으로 해석합니다. `tags_any`와 `time`은 해당 선택 또는 참조 소스 각각에 적용되며, 한 소스의 필터가 다른 소스에 전파되거나 부모 필터가 자손에게 상속되는 방식은 아닙니다. 태그 조건과 시간 조건은 같은 소스에 모두 적용하는 제안입니다.
+- `tags_any = []`는 모든 태그를 허용하는 뜻으로 제안되어 있습니다. 값에서 `#`는 생략합니다. 다만 정확한 태그 파서, 경계 판정 및 대소문자 처리 방식은 정해져 있지 않습니다.
+- `created_last_24h`는 실행 시각을 기준으로 생성 시각이 `[실행 시각 - 24시간, 실행 시각)`에 있는 노드를 선택하는 제안입니다. 수정만 된 노드는 새로 생성된 것으로 보지 않습니다.
+- `fixed_context`는 24시간 생성 조건에 제한하지 않고 오래된 문서·노드의 현재 스냅샷을 문맥으로 읽는 제안입니다. `fixed_context`를 선택에 쓰면 나이가 오래된 대상도 후보가 될 수 있습니다.
+
+#### 출력 단위와 주기
+
+| 설정 | 제안 동작 |
+|---|---|
+| `unit = "per_node"` | 선택된 노드마다 결과 하나를 만들고 각 결과를 해당 선택 노드 아래에 둡니다. 템플릿의 대응 `placement` 예시는 `under_each_selected_node`입니다. |
+| `unit = "aggregate"` | 선택된 노드를 모아 결과 하나를 만듭니다. 결과는 `output`에 지정한 문서의 `parent_node_id` 아래에 두는 안이며 대응 `placement` 예시는 `under_parent`입니다. |
+| `schedule = "each_run"` | 실행할 때마다 처리하는 제안입니다. |
+| `schedule = "daily"` | 지정한 시간대의 현지 날짜마다 성공을 최대 한 번 기록하는 제안입니다. 이미 지난 날짜의 실행을 나중에 보충(backfill)하지 않습니다. 시간대가 현지 날짜 경계를 결정하므로 결과에 영향을 줍니다. |
+
+`per_node`와 `aggregate`는 `unit` 값이고 `under_each_selected_node`, `under_parent`는 `placement` 값입니다. 서로 다른 필드의 값이므로 혼동하지 마세요. 조합이나 불일치 처리를 포함한 전체 제약은 아직 형식적으로 정해져 있지 않습니다. `daily` 역시 실행 시각, 실패·재시도·동시 실행 처리까지 정의한 스케줄러가 있다는 의미가 아닙니다.
+
+#### 출력 필드 참고표
+
+| 필드 | 제안 의미 |
+|---|---|
+| `file_id` | 결과를 기록할 문서 ID입니다. 선택 소스 문서와 달라도 됩니다. 템플릿의 per-node 예시는 결과를 선택 노드 아래 두므로 이 필드를 생략하고, aggregate 예시는 출력 문서 ID를 지정합니다. |
+| `parent_node_id` | `under_parent`일 때 결과를 둘 부모 노드 ID입니다. |
+| `placement` | 결과 배치 방식입니다. `under_each_selected_node`는 선택 노드마다 그 아래에 결과를 두고, `under_parent`는 설정한 부모 아래에 결과 하나를 두는 제안입니다. |
+
+#### 템플릿을 바탕으로 한 설계 예시
+
+다음 예시는 구조와 의도를 보여 주기 위한 TOML 초안이며, 구문만 놓고 보면 TOML 표기 예시입니다. 꺾쇠로 표시한 ID는 일부러 알아볼 수 있게 만든 자리표시자입니다. 이를 실제 ID로 교체해 `config.toml`에 설치하거나 실행하지 마세요. 현재 로더·파서·스케줄러는 이 기능을 지원하지 않으며, 작동하거나 검증되지 않습니다.
+
+학습 목표를 각자 평가하는 `per_node` 제안입니다. 선택된 피드백 대상 노드는 목표이고, 공부 기록은 문맥으로만 읽습니다.
+
+```toml
+[[feedback_rules.targets]]
+id = "DESIGN_ONLY_study_goal_review"
+purpose = "각 학습 목표에 대해 지식 평가와 다음 학습 제안"
+domain = "study"
+persona_path = "docs/templates/personas/study.md"
+persona_approval = "user_approved_before_use"
+unit = "per_node"
+schedule = "each_run"
+input_token_range = [1000, 4000]
+output_token_range = [200, 700]
+evidence = "전달된 목표와 기록의 문서/노드 ID를 제시하고, 없거나 잘린 내용은 표시"
+
+[[feedback_rules.targets.selection]]
+file_id = "<DESIGN_ONLY_STUDY_FILE_ID>"
+parent_node_id = "<DESIGN_ONLY_GOAL_LIST_NODE_ID>"
+scope = "descendants"
+context_scope = "self_excluding_nested_goal_subtrees"
+tags_any = ["목표", "goal"]
+time = "fixed_context"
+
+[[feedback_rules.targets.references]]
+file_id = "<DESIGN_ONLY_STUDY_FILE_ID>"
+parent_node_id = "<DESIGN_ONLY_STUDY_RECORDS_NODE_ID>"
+scope = "descendants"
+tags_any = ["공부", "study"]
+time = "created_last_24h"
+
+[feedback_rules.targets.output]
+placement = "under_each_selected_node"
+```
+
+업무·학습·일상 기록을 선택해 커리어 문맥과 대조하는 `aggregate` 제안입니다. 세 선택 소스의 결과는 합쳐지며 커리어 목표는 참고 자료이고, 출력은 커리어 문서의 지정 부모 아래 하나로 모입니다.
+
+```toml
+[[feedback_rules.targets]]
+id = "DESIGN_ONLY_career_daily_review"
+purpose = "업무·학습·일상 기록을 커리어 목표와 비교해 종합"
+domain = "career"
+persona_path = "docs/templates/personas/career.md"
+persona_approval = "user_approved_before_use"
+unit = "aggregate"
+schedule = "daily"
+timezone = "Asia/Seoul"
+input_token_range = [2000, 8000]
+output_token_range = [400, 1200]
+evidence = "각 기록의 문서/노드 ID와 목표를 연결하고 근거 부족은 표시"
+
+[[feedback_rules.targets.selection]]
+file_id = "<DESIGN_ONLY_WORK_FILE_ID>"
+parent_node_id = "<DESIGN_ONLY_WORK_RECORDS_NODE_ID>"
+scope = "descendants"
+tags_any = ["work", "업무"]
+time = "created_last_24h"
+
+[[feedback_rules.targets.selection]]
+file_id = "<DESIGN_ONLY_STUDY_FILE_ID>"
+parent_node_id = "<DESIGN_ONLY_STUDY_RECORDS_NODE_ID>"
+scope = "descendants"
+tags_any = ["공부", "study"]
+time = "created_last_24h"
+
+[[feedback_rules.targets.selection]]
+file_id = "<DESIGN_ONLY_LIFE_FILE_ID>"
+parent_node_id = "<DESIGN_ONLY_LIFE_RECORDS_NODE_ID>"
+scope = "descendants"
+tags_any = ["life", "일상"]
+time = "created_last_24h"
+
+[[feedback_rules.targets.references]]
+file_id = "<DESIGN_ONLY_CAREER_FILE_ID>"
+parent_node_id = "<DESIGN_ONLY_CAREER_GOALS_NODE_ID>"
+scope = "self_and_descendants"
+tags_any = []
+time = "fixed_context"
+
+[feedback_rules.targets.output]
+file_id = "<DESIGN_ONLY_CAREER_FILE_ID>"
+parent_node_id = "<DESIGN_ONLY_CAREER_OUTPUT_PARENT_NODE_ID>"
+placement = "under_parent"
+```
+
+두 예시의 TOML 모양은 별도 임시 파서에 넣어 문법을 살펴볼 수 있도록 작성한 것이지만, 이는 Tutorbot이 해당 설정을 이해하거나 검증한다는 뜻이 아닙니다. 어떠한 Tutorbot 명령도 이 초안을 활성화하거나 유효성 검사하지 않습니다. **실제 `config.toml`에 복사하거나 운영 중인 명령으로 실행하지 마세요.**
+
+#### 아직 결정되지 않은 사항
+
+템플릿은 제안이며 완전한 스키마 명세가 아닙니다. 다음 사항에 대해서는 필요한 답을 추측하지 말고 미결정으로 다루세요.
+
+- 어떤 필드가 필수인지 선택인지, 생략 시 어떤 기본값을 쓸지 정해져 있지 않습니다.
+- `domain`의 가능한 값 전체, 식별자 형식과 유효성 검사 규칙이 정의되어 있지 않습니다. `study`, `career` 등은 예시일 뿐입니다.
+- 실제 태그 문법과 파싱, 대소문자 비교 방식은 정의되어 있지 않습니다.
+- 입력·출력 토큰 목표를 초과할 때 분할, 축약, 중단 중 무엇을 할지 정해져 있지 않습니다. 따라서 이 범위를 하드 캡이나 비용 제한으로 간주하면 안 됩니다.
+- 오류 처리, 재시도, 중복 및 출력 충돌 해결 정책이 정의되어 있지 않습니다.
+- 실행 가능한 운영 런타임과 검증 명령은 없습니다. 현재 설정 로더, TOML 파서 및 스케줄러도 이 초안을 지원하지 않습니다.
+
+`evidence`는 모델에 전달할 지침으로, 응답이 입력의 문서·노드 ID에 근거를 연결하고 출처 내용이 없거나 잘렸으면 이를 밝히도록 제안합니다. 이는 ID의 실제 존재나 응답의 인용을 확인하는 검증 보장이 아닙니다. 출력 가능한 근거의 품질도 입력에 좌우됩니다.
+
+기존 도메인 프로필의 `rules`와 `prompt`는 현재 기능의 텍스트 지침이며, 기존 `tags`는 프로필에서 참고할 태그 정보이지 노드 선택 필터가 아닙니다. 여기 설명한 독립 피드백 작업, 페르소나 파일 경로, 승인 방식과 필터는 별도의 향후 제안이며 현재 규칙과 혼합해 사용할 수 없습니다.
+
+#### 마무리 점검 및 개인정보
+
+향후 설계안을 공유하기 전에 다음을 확인하세요.
+
+- [ ] 각 피드백 작업의 목적과 분류를 정했으며, `domain`을 입력 문서 제한으로 오해하지 않았습니다.
+- [ ] 피드백 대상 노드와 참고 문맥을 구분했고, 여러 선택 소스의 합집합 및 빈 선택 시 건너뛰는 제안을 고려했습니다.
+- [ ] 각 선택·참조 소스의 문서, 부모 노드, 범위, 태그, 시간 조건을 따로 확인했습니다.
+- [ ] `per_node`/`aggregate`, `each_run`/`daily`, 시간대 및 출력 배치가 의도와 일치합니다.
+- [ ] 실제 문서·노드 ID와 권한을 별도로 확인했고, 모든 `DESIGN_ONLY` 값과 꺾쇠 자리표시자가 예시용임을 확인했습니다.
+- [ ] 토큰 범위를 호출당 목표로 이해하고, 근거 지침을 검증 보장으로 간주하지 않았습니다.
+- [ ] 이 미구현 제안을 `config.toml`에 복사하거나 실행하지 않습니다.
+
+**개인정보 주의:** 이 설계가 향후 구현될 경우 입력 문서와 프롬프트에 포함된 개인정보 또는 민감정보가 외부 LLM API 제공자에게 전달될 수 있습니다. 설계 문서나 페르소나 초안에는 불필요한 개인정보, 실명, 비밀 값 및 자격 증명을 넣지 마세요. 실제 기능에서 `--dry-run`도 API 호출을 막지 않는다는 점을 포함해, 기존 실행 기능의 주의사항은 위 도메인 설정 설명을 따르세요.
+
+> **다시 확인:** 이 규칙과 설명서는 미구현 설계 제안일 뿐입니다. 현재 로더·파서·스케줄러가 지원하지 않으며 `config.toml`에 복사하거나 실행해도 작동하지 않습니다. 이를 활성화하거나 검증하는 명령은 없습니다.
 
 ## 3. Dynalist 문서에 학습 내용 작성하기
 

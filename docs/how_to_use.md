@@ -156,7 +156,7 @@ Abandon
 
 #### 생각하는 방법과 설계 순서
 
-먼저 `domain`과 피드백 작업을 구분하세요. 규칙 파일 하나에 `[[feedback_rules.targets]]`를 여러 번 써서 서로 독립된 작업을 여럿 정의할 수 있습니다. 이 초안에서는 TOML 항목을 `feedback_rules.targets`라고 부르며, 각 항목 하나가 목적, 소스, 결과 위치와 처리 방식을 갖춘 전체 지시 단위입니다.
+먼저 `domain`과 피드백 작업을 구분하세요. 규칙 파일 하나에 `[[feedback_rules.tasks]]`를 여러 번 써서 서로 독립된 작업을 여럿 정의할 수 있습니다. 이 초안에서는 TOML 항목을 `feedback_rules.tasks`라고 부르며, 각 항목 하나가 목적, 소스, 결과 위치와 처리 방식을 갖춘 전체 지시 단위입니다.
 
 | 구분 | 의미 |
 |---|---|
@@ -203,7 +203,7 @@ Abandon
 
 #### 선택·참조 소스 필드 참고표
 
-아래의 소스 설정은 `[[feedback_rules.targets.selection]]` 및 `[[feedback_rules.targets.references]]`에 제안된 항목입니다. `context_scope`는 `selection`에만 해당합니다.
+아래의 소스 설정은 `[[feedback_rules.tasks.selection]]` 및 `[[feedback_rules.tasks.references]]`에 제안된 항목입니다. `context_scope`는 `selection`에만 해당합니다.
 
 | 필드 | 적용 범위 | 제안 의미 |
 |---|---|---|
@@ -248,7 +248,7 @@ Abandon
 학습 목표를 각자 평가하는 `per_node` 제안입니다. 선택된 피드백 대상 노드는 목표이고, 공부 기록은 문맥으로만 읽습니다.
 
 ```toml
-[[feedback_rules.targets]]
+[[feedback_rules.tasks]]
 id = "DESIGN_ONLY_study_goal_review"
 purpose = "각 학습 목표에 대해 지식 평가와 다음 학습 제안"
 domain = "study"
@@ -260,7 +260,7 @@ input_token_range = [1000, 4000]
 output_token_range = [200, 700]
 evidence = "전달된 목표와 기록의 문서/노드 ID를 제시하고, 없거나 잘린 내용은 표시"
 
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<DESIGN_ONLY_STUDY_FILE_ID>"
 parent_node_id = "<DESIGN_ONLY_GOAL_LIST_NODE_ID>"
 scope = "descendants"
@@ -268,21 +268,21 @@ context_scope = "self_excluding_nested_goal_subtrees"
 tags_any = ["목표", "goal"]
 time = "fixed_context"
 
-[[feedback_rules.targets.references]]
+[[feedback_rules.tasks.references]]
 file_id = "<DESIGN_ONLY_STUDY_FILE_ID>"
 parent_node_id = "<DESIGN_ONLY_STUDY_RECORDS_NODE_ID>"
 scope = "descendants"
 tags_any = ["공부", "study"]
 time = "created_last_24h"
 
-[feedback_rules.targets.output]
+[feedback_rules.tasks.output]
 placement = "under_each_selected_node"
 ```
 
 업무·학습·일상 기록을 선택해 커리어 문맥과 대조하는 `aggregate` 제안입니다. 세 선택 소스의 결과는 합쳐지며 커리어 목표는 참고 자료이고, 출력은 커리어 문서의 지정 부모 아래 하나로 모입니다.
 
 ```toml
-[[feedback_rules.targets]]
+[[feedback_rules.tasks]]
 id = "DESIGN_ONLY_career_daily_review"
 purpose = "업무·학습·일상 기록을 커리어 목표와 비교해 종합"
 domain = "career"
@@ -295,35 +295,35 @@ input_token_range = [2000, 8000]
 output_token_range = [400, 1200]
 evidence = "각 기록의 문서/노드 ID와 목표를 연결하고 근거 부족은 표시"
 
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<DESIGN_ONLY_WORK_FILE_ID>"
 parent_node_id = "<DESIGN_ONLY_WORK_RECORDS_NODE_ID>"
 scope = "descendants"
 tags_any = ["work", "업무"]
 time = "created_last_24h"
 
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<DESIGN_ONLY_STUDY_FILE_ID>"
 parent_node_id = "<DESIGN_ONLY_STUDY_RECORDS_NODE_ID>"
 scope = "descendants"
 tags_any = ["공부", "study"]
 time = "created_last_24h"
 
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<DESIGN_ONLY_LIFE_FILE_ID>"
 parent_node_id = "<DESIGN_ONLY_LIFE_RECORDS_NODE_ID>"
 scope = "descendants"
 tags_any = ["life", "일상"]
 time = "created_last_24h"
 
-[[feedback_rules.targets.references]]
+[[feedback_rules.tasks.references]]
 file_id = "<DESIGN_ONLY_CAREER_FILE_ID>"
 parent_node_id = "<DESIGN_ONLY_CAREER_GOALS_NODE_ID>"
 scope = "self_and_descendants"
 tags_any = []
 time = "fixed_context"
 
-[feedback_rules.targets.output]
+[feedback_rules.tasks.output]
 file_id = "<DESIGN_ONLY_CAREER_FILE_ID>"
 parent_node_id = "<DESIGN_ONLY_CAREER_OUTPUT_PARENT_NODE_ID>"
 placement = "under_parent"

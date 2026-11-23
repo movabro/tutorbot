@@ -15,7 +15,9 @@
 # - <...>는 작성자가 정할 문서 file ID 또는 노드 node ID의 자리표시자임.
 #
 # 지정 가능한 피드백 규칙 목록 관련 내용
-# - feedback_rules.targets: 독립 피드백 작업의 배열임. 문서에서는 각 항목을 피드백 작업이라고 부름.
+# - feedback_rules.tasks: 독립 피드백 작업의 배열임. 문서에서는 각 항목을 피드백 작업이라고 부름.
+# - 배열 이름은 각 항목이 하나의 피드백 작업이므로 tasks로 함. "대상"은 selection이 고르는 노드를 이미 뜻하므로 targets는 피함.
+# - 배열 위의 feedback_rules 표는 향후 섹션 단위 옵션을 위해 일부러 둠. 배열을 [[feedback_rules]]로 납작하게 만들지 않음.
 # - id: 피드백 작업 식별자임.
 # - purpose: 피드백의 목적임.
 # - domain: 피드백 작업의 도메인 분류임.
@@ -90,7 +92,7 @@
 # 글을 읽고 쓸 때의 숫자는 토큰(글을 세는 단위) 목표 범위이며 꼭 지켜지는 한도는 아님.
 
 # 학습 목표별 피드백 작업(feedback task)
-[[feedback_rules.targets]]
+[[feedback_rules.tasks]]
 id = "study-goals" # 이 작업을 구별하는 이름
 purpose = "각 학습 목표에 대해 지식 평가, 누락과 다음 학습을 제안" # 목표를 살피고 다음 공부를 알려 줌
 domain = "study" # 학습에 관한 작업
@@ -103,7 +105,7 @@ output_token_range = [200, 700] # 한 번에 쓸 답은 200~700 토큰이 목표
 evidence = "전달된 목표와 기록의 문서/노드 ID를 근거로 제시; 없거나 잘린 내용은 모름으로 표시" # 어디서 알았는지 밝히고 모르는 내용도 알림
 
 # 피드백할 목표를 고를 곳
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<목표 목록 node ID>" # 목표 목록 아래를 살펴봄
 scope = "descendants" # 목록 자체를 빼고 그 아래 항목들을 봄
@@ -112,7 +114,7 @@ tags_any = ["목표", "goal"] # 적힌 꼬리표 중 하나 이상이 있는 항
 time = "fixed_context" # 오래전에 만든 목표도 현재 모습으로 고름
 
 # 피드백할 때 함께 읽을 공부 기록
-[[feedback_rules.targets.references]]
+[[feedback_rules.tasks.references]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<공부 기록 node ID>" # 공부 기록 아래를 살펴봄
 scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
@@ -120,11 +122,11 @@ tags_any = ["공부", "study"] # 적힌 꼬리표 중 하나 이상이 있어야
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 읽음
 
 # 고른 목표마다 그 아래에 피드백(feedback)을 씀
-[feedback_rules.targets.output]
+[feedback_rules.tasks.output]
 placement = "under_each_selected_node" # 각 목표 아래에 하나씩 놓음
 
 # 새 공부 기록별 피드백 작업(feedback task)
-[[feedback_rules.targets]]
+[[feedback_rules.tasks]]
 id = "study-new-records" # 이 작업을 구별하는 이름
 purpose = "신규 학습 기록마다 오류 교정과 다음 학습 제안" # 잘못된 점과 다음 공부를 알려 줌
 domain = "study" # 학습에 관한 작업
@@ -137,7 +139,7 @@ output_token_range = [200, 700] # 한 번에 쓸 답은 200~700 토큰이 목표
 evidence = "신규 기록, 관련 목표와 현재 진도의 문서/노드 ID를 제시하고 추측은 구분" # 어디서 알았는지 밝히고 추측은 따로 표시함
 
 # 피드백할 새 공부 기록을 고를 곳
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<공부 기록 node ID>" # 공부 기록 아래를 살펴봄
 scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
@@ -145,7 +147,7 @@ tags_any = ["공부", "study"] # 적힌 꼬리표 중 하나 이상이 있는 �
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
 # 기록을 이해할 때 함께 읽을 목표
-[[feedback_rules.targets.references]]
+[[feedback_rules.tasks.references]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<해당 목표 node ID>" # 작성자가 기록에 맞는 목표를 지정함
 scope = "self" # 지정한 목표 자체만 읽음
@@ -153,7 +155,7 @@ tags_any = [] # 꼬리표가 없어도 읽음
 time = "fixed_context" # 오래된 목표도 현재 모습으로 읽음
 
 # 기록을 이해할 때 함께 읽을 현재 진도
-[[feedback_rules.targets.references]]
+[[feedback_rules.tasks.references]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<현재 진도 node ID>" # 작성자가 기록과 목표에 맞는 진도를 지정함
 scope = "self_and_descendants" # 지정한 진도와 그 아래 항목들을 함께 읽음
@@ -161,11 +163,11 @@ tags_any = [] # 꼬리표가 없어도 읽음
 time = "fixed_context" # 오래된 진도도 현재 모습으로 읽음
 
 # 고른 기록마다 그 아래에 피드백(feedback)을 씀
-[feedback_rules.targets.output]
+[feedback_rules.tasks.output]
 placement = "under_each_selected_node" # 각 기록 아래에 하나씩 놓음
 
 # 새 기록들을 한데 모아 진도를 살피는 피드백 작업(feedback task)
-[[feedback_rules.targets]]
+[[feedback_rules.tasks]]
 id = "study-progress" # 이 작업을 구별하는 이름
 purpose = "신규 학습 기록을 목표와 현재 진도에 비추어 종합" # 목표와 진도를 보며 새 기록들을 종합함
 domain = "study" # 학습에 관한 작업
@@ -178,7 +180,7 @@ output_token_range = [300, 900] # 한 번에 쓸 답은 300~900 토큰이 목표
 evidence = "기록, 목표 및 진도의 근거를 구분하고 부족한 정보는 명시" # 어디서 알았는지 구분하고 부족한 내용도 알림
 
 # 종합할 새 공부 기록을 고를 곳
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<공부 기록 node ID>" # 공부 기록 아래를 살펴봄
 scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
@@ -186,7 +188,7 @@ tags_any = ["공부", "study"] # 적힌 꼬리표 중 하나 이상이 있는 �
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
 # 종합할 때 함께 읽을 목표
-[[feedback_rules.targets.references]]
+[[feedback_rules.tasks.references]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<해당 목표 node ID>" # 작성자가 기록에 맞는 목표를 지정함
 scope = "self" # 지정한 목표 자체만 읽음
@@ -194,7 +196,7 @@ tags_any = [] # 꼬리표가 없어도 읽음
 time = "fixed_context" # 오래된 목표도 현재 모습으로 읽음
 
 # 종합할 때 함께 읽을 현재 진도
-[[feedback_rules.targets.references]]
+[[feedback_rules.tasks.references]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<현재 진도 node ID>" # 작성자가 기록과 목표에 맞는 진도를 지정함
 scope = "self_and_descendants" # 지정한 진도와 그 아래 항목들을 함께 읽음
@@ -202,13 +204,13 @@ tags_any = [] # 꼬리표가 없어도 읽음
 time = "fixed_context" # 오래된 진도도 현재 모습으로 읽음
 
 # 종합 피드백(feedback)을 둘 곳
-[feedback_rules.targets.output]
+[feedback_rules.tasks.output]
 file_id = "<study file ID>" # 학습 문서에 씀
 parent_node_id = "<진도 종합 결과를 둘 node ID>" # 피드백(feedback)을 둘 윗항목을 지정함
 placement = "under_parent" # 지정한 윗항목 아래에 하나로 묶어 놓음
 
 # 일과 공부와 일상을 모아 진로를 살피는 작업: 아직 실행되지 않는 예시임
-[[feedback_rules.targets]]
+[[feedback_rules.tasks]]
 id = "career-daily" # 이 작업을 구별하는 이름
 purpose = "업무·학습·일상의 관찰을 커리어 목표와 비교해 일일 종합" # 모은 기록을 진로 목표와 비교함
 domain = "career" # 진로에 관한 작업
@@ -225,7 +227,7 @@ evidence = "각 관찰의 문서/노드 ID와 목표를 연결하고 가설과 �
 # - selection 소스 문서는 업무·학습·일상이며, 결과(출력) 문서는 career임.
 # - 업무·학습·일상의 신규 선택 결과를 합집합으로 묶음.
 # - 하나라도 있으면 종합하고 모두 비면 건너뜀.
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<work file ID>" # 일한 내용을 적은 문서에서
 parent_node_id = "<업무 기록 node ID>" # 업무 기록 아래를 살펴봄
 scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
@@ -233,7 +235,7 @@ tags_any = ["work", "업무"] # 적힌 꼬리표 중 하나 이상이 있는 항
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
 # 위의 업무 기록과 함께 모을 공부 기록
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<study file ID>" # 학습 문서에서
 parent_node_id = "<학습 기록 node ID>" # 학습 기록 아래를 살펴봄
 scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
@@ -241,7 +243,7 @@ tags_any = ["공부", "study"] # 적힌 꼬리표 중 하나 이상이 있는 �
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
 # 위의 기록들과 함께 모을 일상 기록
-[[feedback_rules.targets.selection]]
+[[feedback_rules.tasks.selection]]
 file_id = "<life file ID>" # 일상 문서에서
 parent_node_id = "<일상 기록 node ID>" # 일상 기록 아래를 살펴봄
 scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
@@ -249,7 +251,7 @@ tags_any = ["life", "일상"] # 적힌 꼬리표 중 하나 이상이 있는 항
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
 # 종합할 때 함께 읽을 진로 목표
-[[feedback_rules.targets.references]]
+[[feedback_rules.tasks.references]]
 file_id = "<career file ID>" # 진로 문서에서 목표를 참고로 읽음
 parent_node_id = "<커리어 목표 node ID>" # 진로 목표를 지정함
 scope = "self_and_descendants" # 목표와 그 아래 항목들을 함께 읽음
@@ -257,7 +259,7 @@ tags_any = [] # 꼬리표가 없어도 읽음
 time = "fixed_context" # 새로 고른 기록과 관계없이 오래된 목표도 현재 모습으로 읽음
 
 # 입력한 기록과 다른 문서에 종합 피드백(feedback)을 둘 곳
-[feedback_rules.targets.output]
+[feedback_rules.tasks.output]
 file_id = "<career file ID>" # 진로 문서에 씀
 parent_node_id = "<커리어 일일 종합 결과를 둘 node ID>" # 피드백(feedback)을 둘 윗항목을 지정함
 placement = "under_parent" # 지정한 윗항목 아래에 하나로 묶어 놓음

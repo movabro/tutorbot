@@ -210,7 +210,7 @@ Abandon
 | `file_id` | 선택·참조 | 읽을 Dynalist 문서의 ID입니다. 선택 소스 문서와 참조 문서는 피드백 작업의 결과 문서와 같을 수도, 다를 수도 있습니다. |
 | `parent_node_id` | 선택·참조 | 범위를 펼칠 기준 노드의 ID입니다. 실제 노드 ID로 바꿔야 합니다. |
 | `scope` | 선택·참조 | 기준 노드에서 읽을 범위입니다. `self`는 기준 노드 자체, `descendants`는 자손만, `self_and_descendants`는 기준 노드와 자손을 뜻합니다. |
-| `context_scope` | 선택만 | 선택된 각 피드백 대상 노드에 붙일 문맥의 범위를 세밀하게 제안합니다. 예시 `self_excluding_nested_goal_subtrees`는 해당 목표 자체와 문맥은 두되, 중첩된 다른 목표 및 그 하위 트리는 제외하는 의미입니다. |
+| `context_scope` | 선택만 | 선택된 각 피드백 대상 노드에 붙일 문맥의 범위를 세밀하게 제안합니다. 예시 `self_excluding_nested_goal_subtrees`는 해당 목표 자체와 문맥은 두되, 중첩된 다른 목표 및 그 하위 트리는 제외하는 의미입니다.  `self_and_descendants`(고른 노드와 모든 하위 항목)와 `self_and_children`(고른 노드와 바로 아래 자식만)도 항목에 있습니다. |
 | `tags_any` | 선택·참조 | 목록의 태그 이름 중 하나 이상에 맞는 소스를 허용하는 제안입니다. `#` 기호는 빼고 적으며 `[]`는 태그 필터를 적용하지 않는다는 뜻입니다. |
 | `time` | 선택·참조 | 소스의 시간 조건입니다. 예시는 `created_last_24h`와 `fixed_context`입니다. |
 
@@ -226,8 +226,8 @@ Abandon
 
 | 설정 | 제안 동작 |
 |---|---|
-| `unit = "per_node"` | 선택된 노드마다 결과 하나를 만들고 각 결과를 해당 선택 노드 아래에 둡니다. 템플릿의 대응 `placement` 예시는 `under_each_selected_node`입니다. |
-| `unit = "aggregate"` | 선택된 노드를 모아 결과 하나를 만듭니다. 결과는 `output`에 지정한 문서의 `parent_node_id` 아래에 두는 안이며 대응 `placement` 예시는 `under_parent`입니다. |
+| `unit = "per_node"` | 선택된 노드마다 결과 하나를 만들고 각 결과를 해당 선택 노드의 직접 자식으로 추가하는 안입니다. 템플릿의 대응 `placement` 예시는 `under_each_selected_node`입니다. |
+| `unit = "aggregate"` | 선택된 노드를 모아 결과 하나를 만듭니다. 결과는 `output`에 지정한 문서의 `parent_node_id` 노드의 직접 자식으로 추가하는 안이며 대응 `placement` 예시는 `under_parent`입니다. |
 | `schedule = "each_run"` | 실행할 때마다 처리하는 제안입니다. |
 | `schedule = "daily"` | 지정한 시간대의 현지 날짜마다 성공을 최대 한 번 기록하는 제안입니다. 이미 지난 날짜의 실행을 나중에 보충(backfill)하지 않습니다. 시간대가 현지 날짜 경계를 결정하므로 결과에 영향을 줍니다. |
 
@@ -237,9 +237,19 @@ Abandon
 
 | 필드 | 제안 의미 |
 |---|---|
-| `file_id` | 결과를 기록할 문서 ID입니다. 선택 소스 문서와 달라도 됩니다. 템플릿의 per-node 예시는 결과를 선택 노드 아래 두므로 이 필드를 생략하고, aggregate 예시는 출력 문서 ID를 지정합니다. |
-| `parent_node_id` | `under_parent`일 때 결과를 둘 부모 노드 ID입니다. |
-| `placement` | 결과 배치 방식입니다. `under_each_selected_node`는 선택 노드마다 그 아래에 결과를 두고, `under_parent`는 설정한 부모 아래에 결과 하나를 두는 제안입니다. |
+| `file_id` | 결과를 기록할 문서 ID입니다. 선택 소스 문서와 달라도 됩니다. 템플릿의 per-node 예시는 결과를 선택 노드의 직접 자식으로 두므로 이 필드를 생략하고, aggregate 예시는 출력 문서 ID를 지정합니다. |
+| `parent_node_id` | `under_parent`일 때 결과를 직접 자식으로 추가할 부모 노드 ID입니다. |
+| `placement` | 결과 배치 방식의 제안입니다. `under_each_selected_node`는 선택 노드마다 그 노드의 직접 자식으로 결과를 추가하고, `under_parent`는 `output.parent_node_id`로 지정한 부모 노드의 직접 자식으로 결과 하나를 추가합니다. |
+
+예를 들어 지정 노드를 부모로 하는 출력 계층은 다음과 같습니다.
+
+```text
+지정 노드
+  피드백 결과   ← 지정 노드의 직접 자식
+같은 단계 노드 ← 지정 노드의 형제, 자식이 아님
+```
+
+같은 단계에서 뒤에 적는 노드는 형제입니다. 이 초안에는 형제 노드 출력 옵션이 없습니다. `scope`의 `descendants`는 직접 자식뿐 아니라 손자 등 모든 자손을 뜻합니다.
 
 #### 템플릿을 바탕으로 한 설계 예시
 
@@ -279,7 +289,7 @@ time = "created_last_24h"
 placement = "under_each_selected_node"
 ```
 
-업무·학습·일상 기록을 선택해 커리어 문맥과 대조하는 `aggregate` 제안입니다. 세 선택 소스의 결과는 합쳐지며 커리어 목표는 참고 자료이고, 출력은 커리어 문서의 지정 부모 아래 하나로 모입니다.
+업무·학습·일상 기록을 선택해 커리어 문맥과 대조하는 `aggregate` 제안입니다. 세 선택 소스의 결과는 합쳐지며 커리어 목표는 참고 자료이고, 출력은 커리어 문서의 지정 부모에 직접 자식 하나로 추가하는 안입니다.
 
 ```toml
 [[feedback_rules.tasks]]

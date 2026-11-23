@@ -2,10 +2,17 @@
 from __future__ import annotations
 
 import ast
+import logging
 import os
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+from .feedback.loader import parse_feedback_rules
+from .feedback.models import ConfigIssue, FeedbackRulesCfg
+
+log = logging.getLogger(__name__)
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -68,25 +75,122 @@ def _parse_val(v: str) -> Any:
         return v.strip('"').strip("'")
 
 
+def _parse_array(value: str) -> list:
+    class BoolNames(ast.NodeTransformer):
+        def visit_Name(self, node):
+            if node.id in ("true", "false"):
+                return ast.copy_location(ast.Constant(node.id == "true"), node)
+            return node
+
+    tree = BoolNames().visit(ast.parse(value, mode="eval"))
+    result = ast.literal_eval(tree)
+    if not isinstance(result, list) or any(isinstance(x, (list, dict)) for x in result):
+        raise ValueError("expected a one-dimensional array")
+    return result
+
+
+def _unsupported_rules_value(value: str) -> str | None:
+    """Detect unsupported constructs outside quoted strings, including in arrays."""
+    unquoted = re.sub(r'"(?:\\.|[^"\\])*"|\'[^\']*\'', '""', value)
+    if "{" in unquoted or "}" in unquoted:
+        return "inline table"
+    if re.search(r"(?<![\w-])(?:\d{4}-\d\d-\d\d(?:[Tt ][0-9:.+-]+[Zz]?)?|\d\d:\d\d:\d\d(?:\.\d+)?)(?![\w-])", unquoted):
+        return "datetime literal"
+    return None
+
+
 def _simple_toml_parse(text: str) -> dict[str, Any]:
+    from .feedback.models import RulesParseFailure
+
     root: dict[str, Any] = {}
     cur = root
-    for raw in text.splitlines():
-        line = _strip_inline_comment(raw)
+    lines = text.splitlines()
+    section = ""
+    failure = None
+    i = 0
+    while i < len(lines):
+        i += 1
+        line = _strip_inline_comment(lines[i - 1])
         if not line:
             continue
-        if line.startswith("[") and line.endswith("]"):
-            sec = line[1:-1].strip()
+        if line.startswith("[") and line.endswith("]") and "=" not in line:
+            array_table = line.startswith("[[") and line.endswith("]]")
+            sec = line[2:-2].strip() if array_table else line[1:-1].strip()
+            section = sec
+            if failure and (sec == "feedback_rules" or sec.startswith("feedback_rules.")):
+                continue
             cur = root
-            for name in sec.split("."):
+            names = sec.split(".")
+            for name in names[:-1]:
                 child = cur.setdefault(name, {})
+                if isinstance(child, list) and child:
+                    child = child[-1]
+                if not isinstance(child, dict):
+                    raise ValueError(f"TOML table conflicts with a value: {sec}")
+                cur = child
+            name = names[-1]
+            if array_table:
+                child = cur.setdefault(name, [])
+                if not isinstance(child, list):
+                    raise ValueError(f"TOML table conflicts with a value: {sec}")
+                child.append({})
+                cur = child[-1]
+            else:
+                child = cur.setdefault(name, {})
+                if isinstance(child, list) and child:
+                    child = child[-1]
                 if not isinstance(child, dict):
                     raise ValueError(f"TOML table conflicts with a value: {sec}")
                 cur = child
             continue
+        if failure and (section == "feedback_rules" or section.startswith("feedback_rules.")):
+            continue
         if "=" in line:
             k, v = line.split("=", 1)
-            cur[k.strip()] = _parse_val(v.strip())
+            k, v = k.strip(), v.strip()
+            if section == "feedback_rules" or section.startswith("feedback_rules."):
+                construct = None
+                if v.startswith(('"""', "'''")):
+                    construct = "multiline string"
+                elif "." in k:
+                    construct = "dotted key"
+                else:
+                    construct = _unsupported_rules_value(v)
+                if construct:
+                    failure = RulesParseFailure(i, construct)
+                    continue
+            if v.startswith("["):
+                start = i
+                while True:
+                    # The Python parser detects unterminated arrays and strings.
+                    try:
+                        parsed = _parse_array(v)
+                    except (ValueError, SyntaxError):
+                        if i >= len(lines):
+                            raise ValueError(f"invalid TOML array at line {start}") from None
+                        i += 1
+                        v += "\n" + _strip_inline_comment(lines[i - 1])
+                        if section == "feedback_rules" or section.startswith("feedback_rules."):
+                            construct = _unsupported_rules_value(v)
+                            if construct:
+                                failure = RulesParseFailure(i, construct)
+                                break
+                    else:
+                        cur[k] = parsed
+                        break
+            else:
+                if v.startswith(('"', "'")):
+                    try:
+                        parsed = ast.literal_eval(v)
+                    except (SyntaxError, ValueError):
+                        raise ValueError(f"invalid TOML string at line {i}") from None
+                    cur[k] = parsed
+                else:
+                    cur[k] = _parse_val(v)
+        else:
+            raise ValueError(f"invalid TOML at line {i}")
+    if failure:
+        root["feedback_rules"] = failure
     return root
 
 
@@ -179,9 +283,10 @@ class Settings:
     llm: LLMCfg = field(default_factory=LLMCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
     domains: dict[str, DomainProfileCfg] = field(default_factory=_default_domains)
+    feedback_rules: FeedbackRulesCfg = field(default_factory=FeedbackRulesCfg)
 
     @classmethod
-    def model_validate(cls, d: dict[str, Any]) -> "Settings":
+    def model_validate(cls, d: dict[str, Any], *, base_dir: Path | None = None) -> "Settings":
         domains = _default_domains()
         for name, profile in d.get("domains", {}).items():
             if name not in domains:
@@ -212,6 +317,10 @@ class Settings:
             llm=LLMCfg(**d.get("llm", {})),
             logging=LoggingCfg(**d.get("logging", {})),
             domains=domains,
+            feedback_rules=parse_feedback_rules(
+                d.get("feedback_rules"), base_dir=base_dir or Path.cwd(),
+                default_timezone=d.get("timezone", "Asia/Seoul"),
+            ),
         )
 
     def dynalist_token(self) -> str:
@@ -229,11 +338,45 @@ class Settings:
         return key
 
 
-def load_settings(path: str | Path | None = None, dotenv_path: str | Path = ".env") -> Settings:
+def load_settings(path: str | Path | None = None, dotenv_path: str | Path = ".env",
+                  *, rules_file: str | Path | None = None, base_dir: str | Path | None = None) -> Settings:
     load_dotenv(dotenv_path)
+    selected_rules = rules_file or os.environ.get("TUTORBOT_FEEDBACK_RULES_FILE")
+    ignored_tasks = False
     if path is None:
         s = Settings()
     else:
         with open(path, "rb") as f:
-            s = Settings.model_validate(_parse_toml_bytes(f.read()))
+            raw_config = _parse_toml_bytes(f.read())
+        raw_feedback = raw_config.get("feedback_rules")
+        if selected_rules and isinstance(raw_feedback, dict) and "tasks" in raw_feedback:
+            ignored_tasks = bool(raw_feedback["tasks"])
+            raw_config["feedback_rules"] = {k: v for k, v in raw_feedback.items() if k != "tasks"}
+        s = Settings.model_validate(raw_config,
+                                    base_dir=Path(base_dir) if base_dir else Path(path).resolve().parent)
+    if selected_rules:
+        if ignored_tasks:
+            log.warning("config.toml feedback_rules.tasks ignored: rules file in use")
+        rules_dir = Path(base_dir) if base_dir else Path(selected_rules).resolve().parent
+        try:
+            with open(selected_rules, "rb") as f:
+                raw = _parse_toml_bytes(f.read())
+            loaded = parse_feedback_rules(raw.get("feedback_rules"), base_dir=rules_dir,
+                                          source=str(selected_rules), default_timezone=s.timezone,
+                                          is_rules_file=True)
+        except (OSError, ValueError) as exc:
+            loaded = FeedbackRulesCfg(source=str(selected_rules), base_dir=rules_dir)
+            loaded.issues.append(ConfigIssue("FR-G007", "error", "feedback_rules",
+                                             f"rules file not found, unreadable, or invalid: {selected_rules}"))
+            log.debug("rules file could not be loaded: %s", type(exc).__name__)
+        for key in ("enabled", "max_llm_calls_per_run", "max_units_per_task",
+                    "stale_lock_minutes", "safety_input_token_limit"):
+            setattr(loaded, key, getattr(s.feedback_rules, key))
+        # The replacement discards config tasks, including errors about the
+        # shape or number of those tasks, but preserves scalar/global errors.
+        loaded.issues.extend(s.feedback_rules.issues)
+        for issue in loaded.issues:
+            if issue.code == "FR-G007" and issue.severity == "error":
+                log.error("feedback_config_error code=%s path=%s", issue.code, issue.path)
+        s.feedback_rules = loaded
     return s

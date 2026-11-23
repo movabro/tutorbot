@@ -245,14 +245,14 @@ def test_crash_after_apply_is_unknown_outcome_and_not_retried():
 
 def test_migrate_creates_schema_idempotently():
     conn = connect(":memory:")
-    assert migrate(conn) == 2
-    assert migrate(conn) == 2
+    assert migrate(conn) == 3
+    assert migrate(conn) == 3
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"goal", "concept", "study_entry", "quiz_card", "quiz_attempt", "bot_node",
             "write_op", "knowledge_dump", "run_log", "llm_call", "meta",
             "domain_state", "domain_run", "personal_task", "personal_task_progress",
             "completion_event"} <= names
-    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "2"
+    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
     # FK / unique sanity
     conn.execute("INSERT INTO write_op(op_key,file_id,action,payload_json,seq,created_at) "
                  "VALUES('k','f','insert','{}',1,'t')")

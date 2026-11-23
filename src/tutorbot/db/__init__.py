@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -40,18 +41,48 @@ def _migrations() -> list[tuple[int, Path]]:
     return sorted(out)
 
 
+def _feedback_schema(script: str) -> dict[str, tuple[str, str]]:
+    """Expected definitions, including constraints, for interrupted 003 recovery."""
+    with closing(sqlite3.connect(":memory:")) as expected:
+        expected.executescript(script)
+        return {
+            name: (kind, " ".join(sql.split()))
+            for kind, name, sql in expected.execute(
+                "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL"
+            )
+        }
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply pending migrations; returns the resulting schema version."""
     ver = _current_version(conn)
     if ver < 1:
-        conn.executescript("BEGIN;\n" + (HERE / "schema.sql").read_text(encoding="utf-8") + "\nCOMMIT;")
-        conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','1')")
-        conn.execute("INSERT INTO meta(key,value) VALUES('hash_version',?)", (HASH_VERSION,))
+        try:
+            conn.executescript("BEGIN IMMEDIATE;\n" + (HERE / "schema.sql").read_text(encoding="utf-8"))
+            conn.execute("INSERT INTO meta(key,value) VALUES('schema_version','1')")
+            conn.execute("INSERT INTO meta(key,value) VALUES('hash_version',?)", (HASH_VERSION,))
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
         ver = 1
     for n, path in _migrations():
         if n <= ver:
             continue
-        conn.executescript("BEGIN;\n" + path.read_text(encoding="utf-8") + "\nCOMMIT;")
-        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(n),))
+        script = path.read_text(encoding="utf-8")
+        expected = _feedback_schema(script) if n == 3 else {}
+        try:
+            conn.executescript("BEGIN IMMEDIATE;\n" + script)
+            for name, definition in expected.items():
+                row = conn.execute("SELECT type,sql FROM sqlite_master WHERE name=?", (name,)).fetchone()
+                if not row or row[1] is None or (row[0], " ".join(row[1].split())) != definition:
+                    raise sqlite3.DatabaseError(f"incompatible existing migration 003 object: {name}")
+            conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(n),))
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
         ver = n
     return ver

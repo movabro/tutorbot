@@ -1,6 +1,9 @@
 .venv/
 .env
 data/
+!tests/data/
+tests/data/*
+!tests/data/feedback_rules_example.golden.json
 config.toml
 logs/
 __pycache__/

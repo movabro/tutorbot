@@ -1,0 +1,224 @@
+{
+  "_meta": {
+    "template_sha256": "d672f86b50b10b89c58e2b8838bc3c9335c26434195ecacf7fe786749d827dd3",
+    "generated_with": "tomli 3.10.12"
+  },
+  "data": {
+    "feedback_rules": {
+      "tasks": [
+        {
+          "id": "study-goals",
+          "purpose": "각 학습 목표에 대해 지식 평가, 누락과 다음 학습을 제안",
+          "domain": "study",
+          "persona_path": "docs/templates/personas/study.md",
+          "persona_approval": "user_approved_before_use",
+          "unit": "per_node",
+          "schedule": "each_run",
+          "input_token_range": [
+            1000,
+            4000
+          ],
+          "output_token_range": [
+            200,
+            700
+          ],
+          "evidence": "전달된 목표와 기록의 문서/노드 ID를 근거로 제시; 없거나 잘린 내용은 모름으로 표시",
+          "selection": [
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<목표 목록 node ID>",
+              "scope": "descendants",
+              "context_scope": "self_excluding_nested_goal_subtrees",
+              "tags_any": [
+                "목표",
+                "goal"
+              ],
+              "time": "fixed_context"
+            }
+          ],
+          "references": [
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<공부 기록 node ID>",
+              "scope": "descendants",
+              "tags_any": [
+                "공부",
+                "study"
+              ],
+              "time": "created_last_24h"
+            }
+          ],
+          "output": {
+            "placement": "under_each_selected_node"
+          }
+        },
+        {
+          "id": "study-new-records",
+          "purpose": "신규 학습 기록마다 오류 교정과 다음 학습 제안",
+          "domain": "study",
+          "persona_path": "docs/templates/personas/study.md",
+          "persona_approval": "user_approved_before_use",
+          "unit": "per_node",
+          "schedule": "each_run",
+          "input_token_range": [
+            1000,
+            4000
+          ],
+          "output_token_range": [
+            200,
+            700
+          ],
+          "evidence": "신규 기록, 관련 목표와 현재 진도의 문서/노드 ID를 제시하고 추측은 구분",
+          "selection": [
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<공부 기록 node ID>",
+              "scope": "descendants",
+              "tags_any": [
+                "공부",
+                "study"
+              ],
+              "time": "created_last_24h"
+            }
+          ],
+          "references": [
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<해당 목표 node ID>",
+              "scope": "self",
+              "tags_any": [],
+              "time": "fixed_context"
+            },
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<현재 진도 node ID>",
+              "scope": "self_and_descendants",
+              "tags_any": [],
+              "time": "fixed_context"
+            }
+          ],
+          "output": {
+            "placement": "under_each_selected_node"
+          }
+        },
+        {
+          "id": "study-progress",
+          "purpose": "신규 학습 기록을 목표와 현재 진도에 비추어 종합",
+          "domain": "study",
+          "persona_path": "docs/templates/personas/study.md",
+          "persona_approval": "user_approved_before_use",
+          "unit": "aggregate",
+          "schedule": "each_run",
+          "input_token_range": [
+            1500,
+            5000
+          ],
+          "output_token_range": [
+            300,
+            900
+          ],
+          "evidence": "기록, 목표 및 진도의 근거를 구분하고 부족한 정보는 명시",
+          "selection": [
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<공부 기록 node ID>",
+              "scope": "descendants",
+              "tags_any": [
+                "공부",
+                "study"
+              ],
+              "time": "created_last_24h"
+            }
+          ],
+          "references": [
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<해당 목표 node ID>",
+              "scope": "self",
+              "tags_any": [],
+              "time": "fixed_context"
+            },
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<현재 진도 node ID>",
+              "scope": "self_and_descendants",
+              "tags_any": [],
+              "time": "fixed_context"
+            }
+          ],
+          "output": {
+            "file_id": "<study file ID>",
+            "parent_node_id": "<진도 종합 결과를 둘 node ID>",
+            "placement": "under_parent"
+          }
+        },
+        {
+          "id": "career-daily",
+          "purpose": "업무·학습·일상의 관찰을 커리어 목표와 비교해 일일 종합",
+          "domain": "career",
+          "persona_path": "docs/templates/personas/career.md",
+          "persona_approval": "user_approved_before_use",
+          "unit": "aggregate",
+          "schedule": "daily",
+          "schedule_time": "00:00",
+          "timezone": "Asia/Seoul",
+          "input_token_range": [
+            2000,
+            8000
+          ],
+          "output_token_range": [
+            400,
+            1200
+          ],
+          "evidence": "각 관찰의 문서/노드 ID와 목표를 연결하고 가설과 근거 부족을 별도 표시",
+          "selection": [
+            {
+              "file_id": "<work file ID>",
+              "parent_node_id": "<업무 기록 node ID>",
+              "scope": "descendants",
+              "tags_any": [
+                "work",
+                "업무"
+              ],
+              "time": "created_last_24h"
+            },
+            {
+              "file_id": "<study file ID>",
+              "parent_node_id": "<학습 기록 node ID>",
+              "scope": "descendants",
+              "tags_any": [
+                "공부",
+                "study"
+              ],
+              "time": "created_last_24h"
+            },
+            {
+              "file_id": "<life file ID>",
+              "parent_node_id": "<일상 기록 node ID>",
+              "scope": "descendants",
+              "tags_any": [
+                "life",
+                "일상"
+              ],
+              "time": "created_last_24h"
+            }
+          ],
+          "references": [
+            {
+              "file_id": "<career file ID>",
+              "parent_node_id": "<커리어 목표 node ID>",
+              "scope": "self_and_descendants",
+              "tags_any": [],
+              "time": "fixed_context"
+            }
+          ],
+          "output": {
+            "file_id": "<career file ID>",
+            "parent_node_id": "<커리어 일일 종합 결과를 둘 node ID>",
+            "placement": "under_parent"
+          }
+        }
+      ]
+    }
+  }
+}

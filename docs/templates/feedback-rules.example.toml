@@ -3,282 +3,313 @@
 # - 현재 로더, TOML 폴백 파서 및 스케줄러는 이 형식을 지원하지 않음.
 #
 # 용어와 설정 읽는 법
-# - 피드백(feedback)은 이 설정에 따라 만들어지는 평가나 설명임.
+# - 피드백(feedback)은 이 파일의 설정에 따라 만들어지는 평가나 설명임.
 # - 피드백 작업(feedback task)은 어떤 내용을 살펴보고 어디에 결과를 쓸지 정한 한 묶음임.
 # - 피드백 작업(feedback task)은 목적, 피드백 대상 선택(selection), 참조(references), 출력(output), 처리(processing)를 담는 설정 단위임.
-# - 결과 문서는 피드백을 써 넣을 문서임. selection 소스 문서와 같을 수도, 다를 수도 있음.
-# - 피드백 대상 노드는 selection으로 고르는 분석 단위이며 parent_node_id는 선택 범위의 기준 노드임.
-# - 참조 문서/노드는 references로 읽는 추가 문맥이며 피드백 대상으로 선택하지 않음.
+# - 결과 문서는 피드백을 써 넣을 문서임. selection이 읽는 소스 문서와 같을 수도, 다를 수도 있음.
+# - 피드백 대상 노드(항목)는 selection으로 고르는 분석 단위임.
+# - 부모 항목(노드)은 selection 또는 references의 parent_node_id로 지정하며, 그 설정이 읽거나 고를 항목들의 출발점이 되는 항목임.
+#   output.parent_node_id는 이와 다르게 피드백 결과를 그 아래에 둘 부모 항목임.
+# - 참조 문서/노드는 references로 읽는 추가 참고 자료이며 피드백 대상으로 선택하지 않음.
 # - <...>는 실제 문서나 항목의 번호로 바꿔 쓸 자리임.
 #
 # 작성자는 아래처럼 [[feedback_rules.tasks]]에서 작업 하나의 설정을 시작함.
-# 그 아래 id와 purpose는 이 작업의 이름과 목적임.
+# 그 줄 아래에 적는 id와 purpose는 방금 시작한 작업의 이름과 목적임.
 # 이어지는 [[feedback_rules.tasks.selection]]은 피드백 받을 항목을 고르는 곳임.
-# [[feedback_rules.tasks.references]]는 답을 쓸 때 참고로 함께 읽을 자료를 정함.
+# [[feedback_rules.tasks.references]]는 피드백을 쓸 때 참고로 함께 읽을 자료를 정함.
 # [feedback_rules.tasks.output]은 완성한 피드백을 둘 곳을 정함.
-# 이 세 설정은 바로 앞에 적은 작업에 속함. 새 작업은 [[feedback_rules.tasks]]부터 다시 적음.
+# selection, references, output 설정은 바로 앞에 적은 [[feedback_rules.tasks]] 작업에 속함. 새 작업은 [[feedback_rules.tasks]]부터 다시 적음.
 # 예: 아래의 study-goals 작업은 selection으로 목표를 고르고,
-# references로 공부 기록을 참고한 뒤, output에 정한 곳에 피드백을 씀.
+# references로 공부 기록을 참고한 뒤, output에서 정한 위치에 피드백을 씀.
 #
 # 설정 항목 안내
-# - id: 작업을 구별하는 이름임. 피드백 작업 식별자임.
-# - purpose: 피드백의 목적임.
-# - domain: 작업이 다루는 분야임.
-# - persona_path: 피드백을 작성할 역할이 적힌 파일의 위치임.
-# - persona_approval: 피드백 작성 역할을 사용하기 전에 사용자 승인이 필요한지 정함.
-# - unit: 피드백 작업이 선택한 항목마다 피드백을 따로 만들지, 항목들을 모아 하나로 만들지 정함.
-# - schedule: 피드백 작업을 실행할 때를 정함.
-# - timezone: 하루의 기준이 되는 지역 시간대임.
-# - input_token_range, output_token_range: 한 번에 읽고 쓸 글의 분량 목표임.
-# - evidence: 피드백에 근거를 어떻게 밝힐지 정하는 안내임.
+# 아래 값들은 초안의 제안이나 예시이며, 전체 허용목록과 추가 옵션은 아직 확정되지 않음.
+# - id: 작업을 구별하는 이름을 직접 적음. 예: "study-goals". 이름 형식과 고유성 규칙은 미정임.
+# - purpose: 피드백 작업의 목적을 자유롭게 적음. 예: "신규 학습 기록마다 오류 교정과 다음 학습 제안".
+# - domain: 작업의 분야를 나타내는 분류임. 예: "study"(학습), "career"(진로).
+#   domain으로 쓸 수 있는 전체 값은 미정이며 domain 값이 읽을 문서나 결과를 쓸 문서를 정하지는 않음.
+# - persona_path: 피드백 작성 역할이 적힌 페르소나 파일의 경로를 직접 적음.
+#   이 설정 파일이 있는 디렉터리를 시작점으로 하는 상대 경로로 제안하며 예: "docs/templates/personas/study.md".
+# - persona_approval: 페르소나를 쓰기 전에 사용자 승인을 받을지 정하는 정책임.
+#   현재 예시 "user_approved_before_use"는 페르소나 사용 전 사용자 승인임.
+#   다른 정책은 미정이며 페르소나 추천과 승인 절차는 미구현임.
+# - unit: 피드백을 몇 개 만들지 정하는 단위임. "per_node"는 고른 항목마다 피드백 하나씩,
+#   "aggregate"는 고른 항목들을 모아 피드백 하나를 만듦.
+# - schedule: 피드백 작업을 실행하는 주기임. "each_run"은 실행할 때마다,
+#   "daily"는 timezone에 적은 시간대의 날짜 하루에 성공한 실행을 최대 한 번만 함.
+# - timezone: schedule이 "daily"일 때 하루를 나누는 기준 시간대를 직접 적음. 예: "Asia/Seoul"(서울 시간).
+#   하루 중 몇 시에 실행할지는 미정임.
+# - input_token_range, output_token_range: LLM을 한 번 호출할 때 읽고 쓸 토큰 수의 목표를 숫자 두 개(최소, 최대)로 적음.
+#   예: [1000, 4000], [200, 700]. 보장되는 한도나 비용 상한은 아님.
+# - evidence: 피드백이 어떤 문서·항목을 근거로 했는지 어떻게 밝힐지 자유롭게 적는 지침임.
+#   예: "기록, 목표 및 진도의 근거를 구분하고 부족한 정보는 명시". 근거가 맞는지 시스템이 검증해 준다는 보장은 없음.
 # - selection: 피드백 대상으로 삼을 문서와 항목을 정함.
-# - references: 피드백 대상은 아니지만 피드백 작업이 함께 살펴볼 자료를 정함.
-# - selection과 references의 file_id: 문서 번호임.
-# - selection과 references의 parent_node_id: 살펴볼 항목의 기준이 되는 항목 번호임.
-# - selection과 references의 scope: 피드백 작업이 기준 항목만 볼지, 그 아래 항목도 볼지 정함.
-# - selection의 context_scope: 피드백 작업이 선택한 항목과 함께 읽을 범위를 정함.
-# - selection과 references의 tags_any: 선택하거나 참조할 항목을 고르는 꼬리표를 정함.
-# - selection과 references의 time: 항목을 고를 기간이나 오래된 자료를 읽을지 정함.
-# - output: 피드백을 쓸 위치를 정함.
-# - output.file_id, output.parent_node_id: 결과를 쓸 문서와 기준 항목의 번호임.
-# - output.placement: 피드백을 선택한 항목 아래에 쓸지, 지정한 항목 아래에 모아 쓸지 정함.
+# - references: 피드백을 작성할 때 참고로 함께 읽을 자료를 정함. references만으로는 피드백 대상을 고르지 않음.
+#   예를 들어 study-goals에서는 selection이 학습 목표를 고르고, references가 공부 기록을 참고 자료로 읽음.
+#   피드백 결과는 output 설정에 따라 고른 목표마다 그 목표 아래에 씀.
+#   같은 문서나 항목도 다른 selection 설정에서는 피드백 대상으로 선택되고, output 설정에서는 결과를 쓰는 위치가 될 수 있음.
+# - selection과 references의 file_id: 읽을 실제 문서 번호를 적음. 예: "<study file ID>"는 자리표시자임.
+# - selection과 references의 parent_node_id: 이 selection(또는 references)이 읽거나 고를 항목들의 출발점이 되는 항목(부모 항목)의 실제 번호를 적음.
+#   scope 값에 따라 이 부모 항목 자체, 그 아래 항목, 또는 둘 다를 읽음.
+#   예: "<목표 목록 node ID>"는 자리표시자임.
+# - selection과 references의 scope: parent_node_id로 지정한 부모 항목에서 어디까지 읽거나 고를지 정함.
+#   "self"는 부모 항목 자체만, "descendants"는 부모 항목 아래의 모든 하위 항목(자손)만,
+#   "self_and_descendants"는 부모 항목 자체와 그 자손 모두임.
+# - selection의 context_scope: selection이 고른 피드백 대상 항목 하나를 평가할 때, 그 항목과 함께 읽을 내용의 범위임.
+#   현재 예시 "self_excluding_nested_goal_subtrees"는 고른 목표 항목 자신과 그 내용을 읽되,
+#   그 목표 안에 들어 있는 다른 목표 항목과 그 아래 내용은 뺌.
+#   context_scope의 다른 값은 미정임.
+# - selection과 references의 tags_any: 항목을 고르는 조건으로 쓸 꼬리표(태그) 이름을 # 없이 목록으로 직접 적음.
+#   예: ["목표", "goal"]은 항목에 둘 중 하나 이상이 붙어 있으면 고름, []는 태그 조건을 쓰지 않음.
+# - selection과 references의 time: 항목을 고르는 시간 조건임.
+#   "created_last_24h"는 실행 직전 24시간에 생성된 항목만, "fixed_context"는 만든 지 오래된 항목도 24시간 조건 없이 현재 내용으로 읽음.
+# - output: 피드백 결과를 쓸 위치를 정함.
+# - output.file_id, output.parent_node_id: 피드백 결과를 쓸 실제 문서 번호와, 결과를 그 아래에 둘 부모 항목의 실제 번호를 적음.
+#   (selection과 references의 parent_node_id와 달리 읽을 항목이 아니라 결과를 놓을 자리임.)
+#   예: "<study file ID>", "<진도 종합 결과를 둘 node ID>"는 자리표시자임.
+# - output.placement: 피드백 결과를 둘 위치임. "under_each_selected_node"는 고른 항목마다 그 항목 아래,
+#   "under_parent"는 output.parent_node_id로 지정한 부모 항목 아래에 피드백 하나를 둠. unit과의 전체 조합 제약은 미정임.
 #
 # 피드백 대상 노드와 참조 관련 내용
-# - 피드백 작업은 여러 selection의 선택 결과를 합집합으로 분석하고 references는 추가 문맥으로만 사용함.
-# - 선택 결과가 비어 있으면 참조가 있어도 피드백 결과를 만들지 않는 안임.
-# - self_excluding_nested_goal_subtrees는 선택한 목표 자신을 문맥으로 삼되 중첩된 다른 목표의 하위 트리는 제외함.
-# - study-goals는 부모의 자손 중 태그가 맞는 목표를 선택하며 하위 목표도 별도로 평가함.
+# - 한 피드백 작업에 selection이 여러 개이면 각 selection이 고른 항목을 모두 합쳐(합집합) 피드백 대상으로 분석하고, references는 추가 참고 자료로만 사용함.
+# - selection이 고른 항목이 하나도 없으면 references가 있어도 피드백 결과를 만들지 않는 안임.
+# - context_scope 값 self_excluding_nested_goal_subtrees는 고른 목표 자신과 그 내용을 함께 읽되,
+#   그 안에 중첩된 다른 목표의 하위 트리(그 목표와 그 아래 항목)는 제외함.
+# - study-goals의 selection은 parent_node_id로 지정한 부모 항목의 자손 중 태그가 맞는 목표를 고르며, 하위 목표도 각각 별도로 평가함.
 #
-# 범위와 태그 관련 내용
-# - scope의 self는 기준 노드, descendants는 그 자손, self_and_descendants는 둘 모두를 뜻함.
-# - tags_any에 적은 이름 중 하나 이상이 항목의 본문 태그에서 #을 뺀 정확한 이름과 일치해야 하며 []는 제한 없음임.
-# - 태그와 시간 조건은 AND이며 각 selection/reference에만 적용하고 부모의 조건을 자손에게 상속하지 않음.
+# scope와 태그 관련 내용
+# - scope는 selection 또는 references가 parent_node_id로 지정한 부모 항목에서 어디까지 읽거나 고를지 정함.
+#   self는 부모 항목 자체, descendants는 부모 항목의 자손, self_and_descendants는 둘 모두를 뜻함.
+# - 항목 본문의 태그에서 #을 뺀 이름이 tags_any에 적은 이름 중 하나 이상과 정확히 일치해야 고르며, []는 태그 제한 없음임.
+# - 태그 조건과 시간 조건을 모두 만족해야 고르며(AND), 각 조건은 그 조건을 적은 selection 또는 references에만 적용함.
+#   부모 항목에 붙은 태그나 시간 조건을 그 자손에게 상속하지 않음.
 # - 실제 태그 문법과 대소문자 처리는 향후 확정해야 함.
 #
 # 신규 생성과 고정 문맥 관련 내용
-# - 신규 노드의 기본 시간 조건인 created_last_24h는 직전 24시간 생성 노드를 뜻함.
-# - 시간 창은 created >= 실행시각 - 24시간, created < 실행시각임.
-# - 수정 시각은 신규 생성 조건과 무관함.
-# - fixed_context는 신규 24시간 필터의 예외로 오래된 노드도 현재 스냅샷으로 읽는 안임.
+# - created_last_24h는 신규 항목(노드)을 고르는 기본 시간 조건이며, 실행 직전 24시간 안에 생성된 항목을 뜻함.
+# - created_last_24h의 시간 창은 항목의 생성 시각 created >= 실행시각 - 24시간, created < 실행시각임.
+# - 항목을 마지막으로 고친 시각은 created_last_24h의 신규 생성 조건과 무관함.
+# - fixed_context는 created_last_24h의 24시간 조건을 적용하지 않는 예외로, 오래된 항목도 현재 내용(스냅샷)으로 읽는 안임.
 #
 # 각 노드와 종합 출력 관련 내용
-# - per_node는 선택 노드마다 결과 하나를 해당 노드 아래에 두는 안임.
-# - aggregate는 전체 선택 노드를 묶어 output에 지정한 문서의 부모 아래 결과 하나를 두는 안임.
-# - placement의 under_each_selected_node와 under_parent는 각각 위 두 출력 위치를 뜻함.
+# - unit의 per_node는 고른 노드마다 피드백 하나를 그 노드 아래에 두는 안임.
+# - unit의 aggregate는 고른 노드 전체를 묶어, output.file_id 문서 안의 output.parent_node_id 부모 항목 아래에 피드백 하나를 두는 안임.
+# - output.placement의 under_each_selected_node는 per_node의 출력 위치(고른 노드 각각의 아래)를,
+#   under_parent는 aggregate의 출력 위치(output.parent_node_id 부모 항목 아래 한 곳)를 뜻함.
 #
 # 시간대와 주기 관련 내용
-# - each_run은 매 실행을, daily는 설정한 timezone의 현지 날짜당 최대 한 번의 성공을 뜻함.
-# - career-daily는 Asia/Seoul 기준이며 업무·학습·일상 선택 결과 중 하나라도 있으면 종합함.
-# - 세 선택 결과가 모두 비면 career-daily 작업을 건너뛰며 놓친 날짜는 자동 재실행하지 않는 안임.
-# - 다음 실제 실행은 그 시점의 24시간 창만 사용함.
-# - 작업을 실행하지 않았거나 실패했을 때는 커서를 전진시키지 않고 성공 후에만 갱신하는 안임.
-# - 커서는 성공 중복 방지용이며 시간 창 밖의 누락분 재처리를 보장하지 않음.
-# - 충돌·재시도·원자적 쓰기 등 세부 처리는 미결정임.
+# - schedule의 each_run은 매 실행을, daily는 timezone에 적은 시간대의 날짜 하루에 최대 한 번의 성공 실행을 뜻함.
+# - career-daily 작업은 timezone이 Asia/Seoul이며, 업무·학습·일상 세 selection 중 하나라도 항목을 골랐으면 종합함.
+# - 세 selection이 고른 항목이 모두 없으면 career-daily 작업을 건너뛰며, 놓친 날짜를 나중에 자동으로 다시 실행하지 않는 안임.
+# - 다음에 실제로 실행할 때는 그 실행 시점 기준의 24시간 창만 사용함.
+# - 작업을 실행하지 않았거나 실패했을 때는 성공한 실행을 기억해 두는 표시인 커서를 전진시키지 않고, 성공한 뒤에만 갱신하는 안임.
+# - 커서는 같은 날의 성공을 중복해 실행하지 않게 하는 용도이며, 24시간 창 밖에서 누락된 항목을 다시 처리해 준다고 보장하지 않음.
+# - 결과 쓰기 충돌, 재시도, 원자적 쓰기(전부 쓰거나 전혀 쓰지 않음) 등 세부 처리는 미결정임.
 #
 # 페르소나 경로와 승인 관련 내용
-# - persona_path는 향후 설정 파일이 있는 디렉터리 기준 상대 경로로 제안함.
-# - 예시 경로는 설정 파일이 저장소 루트에 있다고 가정함.
-# - user_approved_before_use는 사용 전 사용자 승인 정책이며 추천과 승인 절차는 미구현임.
+# - persona_path는 향후 이 설정 파일이 있는 디렉터리를 시작점으로 하는 상대 경로로 제안함.
+# - 이 파일의 persona_path 예시 경로는 설정 파일이 저장소 루트에 있다고 가정함.
+# - persona_approval의 user_approved_before_use는 페르소나 사용 전 사용자 승인 정책이며 페르소나 추천과 승인 절차는 미구현임.
 #
 # 토큰과 근거 관련 내용
-# - 토큰 범위는 LLM 호출당 입력·출력 목표이며 보장이나 비용 상한이 아님.
-# - 예산 초과 시 분할·축약 방식은 미결정임.
-# - evidence는 전달된 문서·노드에 근거를 연결하고 부족하거나 잘린 내용을 밝히는 지침임.
-# - 이 초안은 출처 검증 기능의 구현을 약속하지 않음.
+# - input_token_range와 output_token_range는 LLM을 한 번 호출할 때의 입력·출력 토큰 목표이며 보장이나 비용 상한이 아님.
+# - 입력이나 출력이 토큰 목표를 넘을 때 내용을 나누거나 줄이는 방식은 미결정임.
+# - evidence는 피드백의 근거를 LLM에 전달된 문서·노드와 연결하고, 부족하거나 잘린 내용은 그렇다고 밝히라는 지침임.
+# - 이 초안은 근거 출처를 시스템이 검증하는 기능의 구현을 약속하지 않음.
 #
 # 작성 시 주의사항 관련 내용
-# - 존재하는 문서·노드 ID, 접근 권한, 피드백 대상 범위와 출력 위치를 작성자가 확인해야 함.
-# - 특히 학습·커리어 노드 ID는 자리표시자이므로 이 파일을 실 서비스에 넣으면 안 됨.
-# - 작성자는 비밀 값과 실명 등 민감한 내용을 설정에 넣지 않아야 함.
+# - 설정 작성자는 실제로 존재하는 문서·노드 ID, 문서 접근 권한, selection이 고르는 항목의 범위와 output의 결과 위치를 직접 확인해야 함.
+# - 특히 학습·커리어 등 이 파일의 문서·노드 ID는 자리표시자이므로 이 파일을 그대로 실제 서비스 설정에 넣으면 안 됨.
+# - 설정 작성자는 비밀 값과 실명 등 민감한 내용을 설정에 넣지 않아야 함.
 
 # 꺾쇠로 둘러싼 부분은 빈자리이므로 실제 문서와 항목의 번호로 바꿔야 함.
-# 글을 읽고 쓸 때의 숫자는 토큰(글을 세는 단위) 목표 범위이며 꼭 지켜지는 한도는 아님.
+# input_token_range와 output_token_range의 숫자는 토큰(글을 세는 단위) 목표 범위이며 꼭 지켜지는 한도는 아님.
 
 # 학습 목표별 피드백 작업(feedback task)
 [[feedback_rules.tasks]]
-id = "study-goals" # 이 작업을 구별하는 이름
+id = "study-goals" # 이 피드백 작업을 구별하는 이름
 purpose = "각 학습 목표에 대해 지식 평가, 누락과 다음 학습을 제안" # 목표를 살피고 다음 공부를 알려 줌
 domain = "study" # 학습에 관한 작업
-persona_path = "docs/templates/personas/study.md" # 설정 파일이 있는 곳을 기준으로 피드백 작성 역할을 정한 페르소나(persona) 파일을 찾음
-persona_approval = "user_approved_before_use" # 사용 전 승인이 필요하지만 추천과 승인 절차는 아직 없음
+persona_path = "docs/templates/personas/study.md" # 이 설정 파일이 있는 디렉터리에서 시작해 페르소나(피드백 작성 역할) 파일을 찾음
+persona_approval = "user_approved_before_use" # 페르소나를 쓰기 전에 사용자 승인이 필요하지만 추천과 승인 절차는 아직 없음
 unit = "per_node" # 고른 목표마다 따로 피드백을 만듦
 schedule = "each_run" # 실행할 때마다 살펴봄
-input_token_range = [1000, 4000] # 한 번에 읽을 글은 1000~4000 토큰이 목표
-output_token_range = [200, 700] # 한 번에 쓸 답은 200~700 토큰이 목표
+input_token_range = [1000, 4000] # LLM 한 번 호출에서 읽을 글은 1000~4000 토큰이 목표
+output_token_range = [200, 700] # LLM 한 번 호출에서 쓸 답은 200~700 토큰이 목표
 evidence = "전달된 목표와 기록의 문서/노드 ID를 근거로 제시; 없거나 잘린 내용은 모름으로 표시" # 어디서 알았는지 밝히고 모르는 내용도 알림
 
 # 피드백할 목표를 고를 곳
 # study-goals 작업의 selection(피드백 대상 선택) 설정
 [[feedback_rules.tasks.selection]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<목표 목록 node ID>" # 목표 목록 아래를 살펴봄
-scope = "descendants" # 목록 자체를 빼고 그 아래 항목들을 봄
-context_scope = "self_excluding_nested_goal_subtrees" # 목표와 그 내용을 읽되 그 안의 다른 목표와 그 아래 내용은 뺌
-tags_any = ["목표", "goal"] # 적힌 꼬리표 중 하나 이상이 있는 항목을 고름
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<목표 목록 node ID>" # 부모 항목: 이 아래에서 피드백할 목표를 고름
+scope = "descendants" # 부모 항목(목표 목록) 자체는 빼고 그 아래 항목들만 고름
+context_scope = "self_excluding_nested_goal_subtrees" # 고른 목표와 그 내용을 읽되 그 목표 안의 다른 목표와 그 아래 내용은 뺌
+tags_any = ["목표", "goal"] # 항목에 이 꼬리표 중 하나 이상이 붙어 있어야 고름
 time = "fixed_context" # 오래전에 만든 목표도 현재 모습으로 고름
 
 # 피드백할 때 함께 읽을 공부 기록
 # study-goals 작업의 references(참조) 설정
 [[feedback_rules.tasks.references]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<공부 기록 node ID>" # 공부 기록 아래를 살펴봄
-scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
-tags_any = ["공부", "study"] # 적힌 꼬리표 중 하나 이상이 있어야 함
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<공부 기록 node ID>" # 부모 항목: 이 아래에서 참고할 공부 기록을 읽음
+scope = "descendants" # 부모 항목(공부 기록 묶음) 자체는 빼고 그 아래 항목들만 읽음
+tags_any = ["공부", "study"] # 항목에 이 꼬리표 중 하나 이상이 붙어 있어야 읽음
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 읽음
 
 # 고른 목표마다 그 아래에 피드백(feedback)을 씀
 # study-goals 작업의 output(출력) 설정
 [feedback_rules.tasks.output]
-placement = "under_each_selected_node" # 각 목표 아래에 하나씩 놓음
+placement = "under_each_selected_node" # 고른 각 목표 아래에 피드백을 하나씩 놓음
 
 # 새 공부 기록별 피드백 작업(feedback task)
 [[feedback_rules.tasks]]
-id = "study-new-records" # 이 작업을 구별하는 이름
+id = "study-new-records" # 이 피드백 작업을 구별하는 이름
 purpose = "신규 학습 기록마다 오류 교정과 다음 학습 제안" # 잘못된 점과 다음 공부를 알려 줌
 domain = "study" # 학습에 관한 작업
-persona_path = "docs/templates/personas/study.md" # 설정 파일이 있는 곳을 기준으로 피드백 작성 역할을 정한 페르소나(persona) 파일을 찾음
-persona_approval = "user_approved_before_use" # 사용 전 승인이 필요하지만 추천과 승인 절차는 아직 없음
+persona_path = "docs/templates/personas/study.md" # 이 설정 파일이 있는 디렉터리에서 시작해 페르소나(피드백 작성 역할) 파일을 찾음
+persona_approval = "user_approved_before_use" # 페르소나를 쓰기 전에 사용자 승인이 필요하지만 추천과 승인 절차는 아직 없음
 unit = "per_node" # 고른 기록마다 따로 피드백을 만듦
 schedule = "each_run" # 실행할 때마다 살펴봄
-input_token_range = [1000, 4000] # 한 번에 읽을 글은 1000~4000 토큰이 목표
-output_token_range = [200, 700] # 한 번에 쓸 답은 200~700 토큰이 목표
+input_token_range = [1000, 4000] # LLM 한 번 호출에서 읽을 글은 1000~4000 토큰이 목표
+output_token_range = [200, 700] # LLM 한 번 호출에서 쓸 답은 200~700 토큰이 목표
 evidence = "신규 기록, 관련 목표와 현재 진도의 문서/노드 ID를 제시하고 추측은 구분" # 어디서 알았는지 밝히고 추측은 따로 표시함
 
 # 피드백할 새 공부 기록을 고를 곳
 # study-new-records 작업의 selection(피드백 대상 선택) 설정
 [[feedback_rules.tasks.selection]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<공부 기록 node ID>" # 공부 기록 아래를 살펴봄
-scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
-tags_any = ["공부", "study"] # 적힌 꼬리표 중 하나 이상이 있는 항목을 고름
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<공부 기록 node ID>" # 부모 항목: 이 아래에서 피드백할 공부 기록을 고름
+scope = "descendants" # 부모 항목(공부 기록 묶음) 자체는 빼고 그 아래 항목들만 고름
+tags_any = ["공부", "study"] # 항목에 이 꼬리표 중 하나 이상이 붙어 있어야 고름
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
 # 기록을 이해할 때 함께 읽을 목표
 # study-new-records 작업의 references(참조) 설정
 [[feedback_rules.tasks.references]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<해당 목표 node ID>" # 작성자가 기록에 맞는 목표를 지정함
-scope = "self" # 지정한 목표 자체만 읽음
-tags_any = [] # 꼬리표가 없어도 읽음
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<해당 목표 node ID>" # 부모 항목: 작성자가 기록에 맞는 목표를 직접 지정함
+scope = "self" # 부모 항목(지정한 목표) 자체만 읽음
+tags_any = [] # 꼬리표 조건 없이 읽음
 time = "fixed_context" # 오래된 목표도 현재 모습으로 읽음
 
 # 기록을 이해할 때 함께 읽을 현재 진도
 # study-new-records 작업의 references(참조) 설정
 [[feedback_rules.tasks.references]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<현재 진도 node ID>" # 작성자가 기록과 목표에 맞는 진도를 지정함
-scope = "self_and_descendants" # 지정한 진도와 그 아래 항목들을 함께 읽음
-tags_any = [] # 꼬리표가 없어도 읽음
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<현재 진도 node ID>" # 부모 항목: 작성자가 기록과 목표에 맞는 진도를 직접 지정함
+scope = "self_and_descendants" # 부모 항목(지정한 진도)과 그 아래 항목들을 함께 읽음
+tags_any = [] # 꼬리표 조건 없이 읽음
 time = "fixed_context" # 오래된 진도도 현재 모습으로 읽음
 
 # 고른 기록마다 그 아래에 피드백(feedback)을 씀
 # study-new-records 작업의 output(출력) 설정
 [feedback_rules.tasks.output]
-placement = "under_each_selected_node" # 각 기록 아래에 하나씩 놓음
+placement = "under_each_selected_node" # 고른 각 기록 아래에 피드백을 하나씩 놓음
 
 # 새 기록들을 한데 모아 진도를 살피는 피드백 작업(feedback task)
 [[feedback_rules.tasks]]
-id = "study-progress" # 이 작업을 구별하는 이름
+id = "study-progress" # 이 피드백 작업을 구별하는 이름
 purpose = "신규 학습 기록을 목표와 현재 진도에 비추어 종합" # 목표와 진도를 보며 새 기록들을 종합함
 domain = "study" # 학습에 관한 작업
-persona_path = "docs/templates/personas/study.md" # 설정 파일이 있는 곳을 기준으로 피드백 작성 역할을 정한 페르소나(persona) 파일을 찾음
-persona_approval = "user_approved_before_use" # 사용 전 승인이 필요하지만 추천과 승인 절차는 아직 없음
+persona_path = "docs/templates/personas/study.md" # 이 설정 파일이 있는 디렉터리에서 시작해 페르소나(피드백 작성 역할) 파일을 찾음
+persona_approval = "user_approved_before_use" # 페르소나를 쓰기 전에 사용자 승인이 필요하지만 추천과 승인 절차는 아직 없음
 unit = "aggregate" # 고른 기록들을 묶어 피드백(feedback)을 하나 만듦
 schedule = "each_run" # 실행할 때마다 살펴봄
-input_token_range = [1500, 5000] # 한 번에 읽을 글은 1500~5000 토큰이 목표
-output_token_range = [300, 900] # 한 번에 쓸 답은 300~900 토큰이 목표
+input_token_range = [1500, 5000] # LLM 한 번 호출에서 읽을 글은 1500~5000 토큰이 목표
+output_token_range = [300, 900] # LLM 한 번 호출에서 쓸 답은 300~900 토큰이 목표
 evidence = "기록, 목표 및 진도의 근거를 구분하고 부족한 정보는 명시" # 어디서 알았는지 구분하고 부족한 내용도 알림
 
 # 종합할 새 공부 기록을 고를 곳
 # study-progress 작업의 selection(피드백 대상 선택) 설정
 [[feedback_rules.tasks.selection]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<공부 기록 node ID>" # 공부 기록 아래를 살펴봄
-scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
-tags_any = ["공부", "study"] # 적힌 꼬리표 중 하나 이상이 있는 항목을 고름
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<공부 기록 node ID>" # 부모 항목: 이 아래에서 종합할 공부 기록을 고름
+scope = "descendants" # 부모 항목(공부 기록 묶음) 자체는 빼고 그 아래 항목들만 고름
+tags_any = ["공부", "study"] # 항목에 이 꼬리표 중 하나 이상이 붙어 있어야 고름
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
 # 종합할 때 함께 읽을 목표
 # study-progress 작업의 references(참조) 설정
 [[feedback_rules.tasks.references]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<해당 목표 node ID>" # 작성자가 기록에 맞는 목표를 지정함
-scope = "self" # 지정한 목표 자체만 읽음
-tags_any = [] # 꼬리표가 없어도 읽음
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<해당 목표 node ID>" # 부모 항목: 작성자가 기록에 맞는 목표를 직접 지정함
+scope = "self" # 부모 항목(지정한 목표) 자체만 읽음
+tags_any = [] # 꼬리표 조건 없이 읽음
 time = "fixed_context" # 오래된 목표도 현재 모습으로 읽음
 
 # 종합할 때 함께 읽을 현재 진도
 # study-progress 작업의 references(참조) 설정
 [[feedback_rules.tasks.references]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<현재 진도 node ID>" # 작성자가 기록과 목표에 맞는 진도를 지정함
-scope = "self_and_descendants" # 지정한 진도와 그 아래 항목들을 함께 읽음
-tags_any = [] # 꼬리표가 없어도 읽음
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<현재 진도 node ID>" # 부모 항목: 작성자가 기록과 목표에 맞는 진도를 직접 지정함
+scope = "self_and_descendants" # 부모 항목(지정한 진도)과 그 아래 항목들을 함께 읽음
+tags_any = [] # 꼬리표 조건 없이 읽음
 time = "fixed_context" # 오래된 진도도 현재 모습으로 읽음
 
 # 종합 피드백(feedback)을 둘 곳
 # study-progress 작업의 output(출력) 설정
 [feedback_rules.tasks.output]
-file_id = "<study file ID>" # 학습 문서에 씀
-parent_node_id = "<진도 종합 결과를 둘 node ID>" # 피드백(feedback)을 둘 윗항목을 지정함
-placement = "under_parent" # 지정한 윗항목 아래에 하나로 묶어 놓음
+file_id = "<study file ID>" # 피드백을 쓸 문서: 학습 문서
+parent_node_id = "<진도 종합 결과를 둘 node ID>" # 부모 항목: 피드백을 이 항목 아래에 둠
+placement = "under_parent" # 지정한 부모 항목 아래에 피드백 하나로 묶어 놓음
 
 # 일과 공부와 일상을 모아 진로를 살피는 작업: 아직 실행되지 않는 예시임
 [[feedback_rules.tasks]]
-id = "career-daily" # 이 작업을 구별하는 이름
+id = "career-daily" # 이 피드백 작업을 구별하는 이름
 purpose = "업무·학습·일상의 관찰을 커리어 목표와 비교해 일일 종합" # 모은 기록을 진로 목표와 비교함
 domain = "career" # 진로에 관한 작업
-persona_path = "docs/templates/personas/career.md" # 설정 파일이 있는 곳을 기준으로 피드백 작성 역할을 정한 페르소나(persona) 파일을 찾음
-persona_approval = "user_approved_before_use" # 사용 전 승인이 필요하지만 추천과 승인 절차는 아직 없음
+persona_path = "docs/templates/personas/career.md" # 이 설정 파일이 있는 디렉터리에서 시작해 페르소나(피드백 작성 역할) 파일을 찾음
+persona_approval = "user_approved_before_use" # 페르소나를 쓰기 전에 사용자 승인이 필요하지만 추천과 승인 절차는 아직 없음
 unit = "aggregate" # 고른 기록들을 묶어 피드백(feedback)을 하나 만듦
-schedule = "daily" # 정한 지역의 하루에 성공은 최대 한 번
+schedule = "daily" # timezone에 적은 지역의 날짜 하루에 성공 실행은 최대 한 번
 timezone = "Asia/Seoul" # 서울의 날짜를 하루의 기준으로 삼음
-input_token_range = [2000, 8000] # 한 번에 읽을 글은 2000~8000 토큰이 목표
-output_token_range = [400, 1200] # 한 번에 쓸 답은 400~1200 토큰이 목표
+input_token_range = [2000, 8000] # LLM 한 번 호출에서 읽을 글은 2000~8000 토큰이 목표
+output_token_range = [400, 1200] # LLM 한 번 호출에서 쓸 답은 400~1200 토큰이 목표
 evidence = "각 관찰의 문서/노드 ID와 목표를 연결하고 가설과 근거 부족을 별도 표시" # 기록과 목표를 연결하고 추측과 부족한 근거를 따로 알림
 
 # 일일 종합 피드백 작업 관련 내용
-# - selection 소스 문서는 업무·학습·일상이며, 결과(출력) 문서는 career임.
-# - career-daily 작업은 업무·학습·일상의 신규 선택 결과를 합집합으로 묶음.
-# - 선택 결과가 하나라도 있으면 작업이 종합하고 모두 비면 작업을 건너뜀.
+# - career-daily 작업에서 selection이 읽는 소스 문서는 업무·학습·일상 문서이며, 결과를 쓰는 output 문서는 career 문서임.
+# - career-daily 작업은 업무·학습·일상 세 selection이 고른 신규 항목을 합집합으로 묶음.
+# - 세 selection 중 하나라도 항목을 골랐으면 career-daily 작업이 종합하고, 모두 고르지 못했으면 작업을 건너뜀.
 # career-daily 작업의 selection(피드백 대상 선택) 설정: 업무 기록
 [[feedback_rules.tasks.selection]]
-file_id = "<work file ID>" # 일한 내용을 적은 문서에서
-parent_node_id = "<업무 기록 node ID>" # 업무 기록 아래를 살펴봄
-scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
-tags_any = ["work", "업무"] # 적힌 꼬리표 중 하나 이상이 있는 항목을 고름
+file_id = "<work file ID>" # 읽을 문서: 일한 내용을 적은 업무 문서
+parent_node_id = "<업무 기록 node ID>" # 부모 항목: 이 아래에서 업무 기록을 고름
+scope = "descendants" # 부모 항목(업무 기록 묶음) 자체는 빼고 그 아래 항목들만 고름
+tags_any = ["work", "업무"] # 항목에 이 꼬리표 중 하나 이상이 붙어 있어야 고름
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
-# 위의 업무 기록과 함께 모을 공부 기록
+# 앞의 업무 기록 selection과 함께 모을 공부 기록
 # career-daily 작업의 selection(피드백 대상 선택) 설정
 [[feedback_rules.tasks.selection]]
-file_id = "<study file ID>" # 학습 문서에서
-parent_node_id = "<학습 기록 node ID>" # 학습 기록 아래를 살펴봄
-scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
-tags_any = ["공부", "study"] # 적힌 꼬리표 중 하나 이상이 있는 항목을 고름
+file_id = "<study file ID>" # 읽을 문서: 학습 문서
+parent_node_id = "<학습 기록 node ID>" # 부모 항목: 이 아래에서 공부 기록을 고름
+scope = "descendants" # 부모 항목(학습 기록 묶음) 자체는 빼고 그 아래 항목들만 고름
+tags_any = ["공부", "study"] # 항목에 이 꼬리표 중 하나 이상이 붙어 있어야 고름
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
-# 위의 기록들과 함께 모을 일상 기록
+# 앞의 업무·공부 기록 selection과 함께 모을 일상 기록
 # career-daily 작업의 selection(피드백 대상 선택) 설정
 [[feedback_rules.tasks.selection]]
-file_id = "<life file ID>" # 일상 문서에서
-parent_node_id = "<일상 기록 node ID>" # 일상 기록 아래를 살펴봄
-scope = "descendants" # 기록 묶음 자체를 빼고 그 아래 항목들을 봄
-tags_any = ["life", "일상"] # 적힌 꼬리표 중 하나 이상이 있는 항목을 고름
+file_id = "<life file ID>" # 읽을 문서: 일상 문서
+parent_node_id = "<일상 기록 node ID>" # 부모 항목: 이 아래에서 일상 기록을 고름
+scope = "descendants" # 부모 항목(일상 기록 묶음) 자체는 빼고 그 아래 항목들만 고름
+tags_any = ["life", "일상"] # 항목에 이 꼬리표 중 하나 이상이 붙어 있어야 고름
 time = "created_last_24h" # 실행 직전 24시간에 새로 만든 기록만 고름
 
 # 종합할 때 함께 읽을 진로 목표
 # career-daily 작업의 references(참조) 설정
 [[feedback_rules.tasks.references]]
-file_id = "<career file ID>" # 진로 문서에서 목표를 참고로 읽음
-parent_node_id = "<커리어 목표 node ID>" # 진로 목표를 지정함
-scope = "self_and_descendants" # 목표와 그 아래 항목들을 함께 읽음
-tags_any = [] # 꼬리표가 없어도 읽음
+file_id = "<career file ID>" # 읽을 문서: 진로 문서(목표를 참고로 읽음)
+parent_node_id = "<커리어 목표 node ID>" # 부모 항목: 진로 목표 항목
+scope = "self_and_descendants" # 부모 항목(진로 목표)과 그 아래 항목들을 함께 읽음
+tags_any = [] # 꼬리표 조건 없이 읽음
 time = "fixed_context" # 새로 고른 기록과 관계없이 오래된 목표도 현재 모습으로 읽음
 
-# 입력한 기록과 다른 문서에 종합 피드백(feedback)을 둘 곳
+# 피드백 대상으로 고른 기록과 다른 문서(진로 문서)에 종합 피드백(feedback)을 둘 곳
 # career-daily 작업의 output(출력) 설정
 [feedback_rules.tasks.output]
-file_id = "<career file ID>" # 진로 문서에 씀
-parent_node_id = "<커리어 일일 종합 결과를 둘 node ID>" # 피드백(feedback)을 둘 윗항목을 지정함
-placement = "under_parent" # 지정한 윗항목 아래에 하나로 묶어 놓음
+file_id = "<career file ID>" # 피드백을 쓸 문서: 진로 문서
+parent_node_id = "<커리어 일일 종합 결과를 둘 node ID>" # 부모 항목: 피드백을 이 항목 아래에 둠
+placement = "under_parent" # 지정한 부모 항목 아래에 피드백 하나로 묶어 놓음

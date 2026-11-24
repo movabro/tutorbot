@@ -1,4 +1,4 @@
-CREATE TABLE feedback_task_run (
+CREATE TABLE IF NOT EXISTS feedback_task_run (
   id INTEGER PRIMARY KEY,
   task_id TEXT NOT NULL,
   cycle_key TEXT NOT NULL,
@@ -27,11 +27,11 @@ CREATE TABLE feedback_task_run (
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   outputs_enqueued INTEGER NOT NULL DEFAULT 0
 );
-CREATE UNIQUE INDEX ux_feedback_task_run_cycle ON feedback_task_run(task_id, cycle_key);
-CREATE INDEX ix_feedback_task_run_task ON feedback_task_run(task_id, started_at);
-CREATE INDEX ix_feedback_task_run_run ON feedback_task_run(run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_feedback_task_run_cycle ON feedback_task_run(task_id, cycle_key);
+CREATE INDEX IF NOT EXISTS ix_feedback_task_run_task ON feedback_task_run(task_id, started_at);
+CREATE INDEX IF NOT EXISTS ix_feedback_task_run_run ON feedback_task_run(run_id);
 
-CREATE TABLE feedback_task_lock (
+CREATE TABLE IF NOT EXISTS feedback_task_lock (
   task_id TEXT PRIMARY KEY,
   owner_pid INTEGER NOT NULL,
   owner_host TEXT NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE feedback_task_lock (
   heartbeat_at TEXT NOT NULL
 );
 
-CREATE TABLE feedback_output (
+CREATE TABLE IF NOT EXISTS feedback_output (
   id INTEGER PRIMARY KEY,
   task_run_id INTEGER NOT NULL REFERENCES feedback_task_run(id),
   task_id TEXT NOT NULL,
@@ -62,10 +62,10 @@ CREATE TABLE feedback_output (
   written_at TEXT,
   UNIQUE(task_run_id, unit_ref, target_file_id, target_node_id)
 );
-CREATE INDEX ix_feedback_output_status ON feedback_output(status);
-CREATE INDEX ix_feedback_output_target ON feedback_output(target_file_id, target_node_id, id);
+CREATE INDEX IF NOT EXISTS ix_feedback_output_status ON feedback_output(status);
+CREATE INDEX IF NOT EXISTS ix_feedback_output_target ON feedback_output(target_file_id, target_node_id, id);
 
-CREATE TABLE feedback_persona_approval (
+CREATE TABLE IF NOT EXISTS feedback_persona_approval (
   id INTEGER PRIMARY KEY,
   task_id TEXT NOT NULL,
   persona_path TEXT NOT NULL,
@@ -76,4 +76,4 @@ CREATE TABLE feedback_persona_approval (
   consumed_by_run INTEGER REFERENCES feedback_task_run(id),
   revoked_at TEXT
 );
-CREATE INDEX ix_feedback_persona_approval_task ON feedback_persona_approval(task_id, persona_hash);
+CREATE INDEX IF NOT EXISTS ix_feedback_persona_approval_task ON feedback_persona_approval(task_id, persona_hash);

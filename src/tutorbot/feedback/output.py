@@ -52,10 +52,31 @@ def enqueue_result(conn, *, task, task_run_id: int, run_id: int, unit: UnitSpec,
             target_own_hash=snapshot.own_hash if snapshot else None,
             target_effective_modified_ms=snapshot.effective_modified_ms if snapshot else None,
             created_at=clock.now_iso())
+        career_note = task.output.format == "career_note"
         header = f"🤖 [{task.id}] {summary[:60]} !({local_date}) #{bot_tag}"[:200]
+        if career_note:
+            prefix = f"🤖 [{task.id}] "
+            suffix = f" !({local_date}) #{bot_tag}"
+            header = prefix + summary.replace("\n", " ")[:min(60, 200 - len(prefix) - len(suffix))] + suffix
+        if career_note and not feedback:
+            raise ValueError("empty_feedback")
+        note = ""
+        if career_note:
+            parts = [f"• {item}" for item in feedback]
+            parts.extend(f"🔎 근거: {item}" for item in evidence)
+            if not evidence:
+                parts.append("🔎 근거 없음")
+            if truncated:
+                parts.append("⚠️ 입력 일부가 잘렸습니다")
+            if over_target:
+                parts.append("⚠️ 입력이 목표 토큰 범위를 넘었습니다")
+            note = "\n".join(parts)
         enqueue_op(conn, run_id=run_id, op_key=root_key, file_id=write_to.file_id,
-                   action="insert", parent_ref=f"node:{write_to.node_id}", payload={"content": header},
+                   action="insert", parent_ref=f"node:{write_to.node_id}",
+                   payload={"content": header, **({"note": note} if career_note else {})},
                    bot_kind="feedback_rule", bot_ref_id=output_id, marker=marker("feedback_rule", ref))
+        if career_note:
+            return output_id
         lines = []
         if task.unit == "per_node" and task.output.placement == "under_parent" and unit.inputs:
             target = unit.inputs[0].ref

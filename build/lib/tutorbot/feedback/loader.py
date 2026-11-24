@@ -21,7 +21,7 @@ EVIDENCE = "전달된 문서·노드 ID를 근거로 제시하고, 없거나 잘
 TASK_KEYS = {
     "id", "purpose", "domain", "persona_path", "persona_approval", "unit",
     "schedule", "schedule_time", "schedule_weekday", "schedule_day",
-    "schedule_month", "schedule_quarter_anchor", "timezone", "input_token_range",
+    "schedule_month", "schedule_quarter_anchor", "schedule_week_end", "timezone", "input_token_range",
     "output_token_range", "evidence", "selection", "references", "output",
 }
 GLOBAL_KEYS = {
@@ -32,6 +32,7 @@ TIMES = {
     "fixed_context", "created_last_24h", "created_today", "created_last_7d",
     "created_since_last_run", "modified_today", "modified_last_24h",
     "modified_last_7d", "modified_since_last_run",
+    "created_since_last_success", "modified_since_last_success",
 }
 SCOPES = {"self", "descendants", "self_and_descendants"}
 CONTEXTS = {"self", "self_and_descendants", "self_and_children", "self_excluding_nested_goal_subtrees"}
@@ -133,11 +134,12 @@ def parse_feedback_rules(raw, *, base_dir: Path, source: str = "config.toml",
         if unit not in ("per_node", "aggregate"):
             issue("FR-T050", "unit", "unit must be per_node or aggregate")
         kind = data.get("schedule")
-        if kind not in ("each_run", "daily", "weekly", "monthly", "quarterly", "yearly"):
+        if kind not in ("each_run", "daily", "weekly", "monthly", "quarterly", "yearly", "work_slots"):
             issue("FR-T060", "schedule", "invalid schedule")
         applicable = {"schedule_time": {"daily", "weekly", "monthly", "quarterly", "yearly"},
                       "schedule_weekday": {"weekly"}, "schedule_day": {"monthly", "yearly"},
-                      "schedule_month": {"yearly"}, "schedule_quarter_anchor": {"quarterly"}}
+                      "schedule_month": {"yearly"}, "schedule_quarter_anchor": {"quarterly"},
+                      "schedule_week_end": {"weekly"}}
         for key, allowed in applicable.items():
             if key in data and (not isinstance(kind, str) or kind not in allowed):
                 issue("FR-T062", key, f"{key} is not applicable to schedule {kind!r}")
@@ -171,6 +173,14 @@ def parse_feedback_rules(raw, *, base_dir: Path, source: str = "config.toml",
         except (ValueError, TypeError, ZoneInfoNotFoundError):
             issue("FR-T070", "timezone", "unknown timezone")
             zone = "Asia/Seoul"
+        week_end = data.get("schedule_week_end", False)
+        if type(week_end) is not bool:
+            issue("FR-T068", "schedule_week_end", "schedule_week_end must be boolean")
+            week_end = False
+        if week_end and ("schedule_weekday" in data or "schedule_time" in data):
+            issue("FR-T068", "schedule_week_end", "week_end cannot be combined with weekday or time")
+        if kind == "work_slots" and zone != "Asia/Seoul":
+            issue("FR-T070", "timezone", "work_slots requires Asia/Seoul")
         ranges = []
         for key, default, cap, code in (("input_token_range", (1000, 4000), 200000, "FR-T080"),
                                          ("output_token_range", (200, 700), 32000, "FR-T081")):
@@ -246,7 +256,7 @@ def parse_feedback_rules(raw, *, base_dir: Path, source: str = "config.toml",
         if not isinstance(output, dict):
             issue("FR-T102", "output", "output is required")
             output = {}
-        for key in output.keys() - {"placement", "file_id", "parent_node_id"}:
+        for key in output.keys() - {"placement", "file_id", "parent_node_id", "format"}:
             issue("FR-O099", f"output.{key}", f"unknown key '{key}'")
         placement = output.get("placement", "under_each_selected_node" if unit == "per_node" else "under_parent")
         if placement not in ("under_parent", "under_each_selected_node"):
@@ -259,11 +269,21 @@ def parse_feedback_rules(raw, *, base_dir: Path, source: str = "config.toml",
                     check_id(output[key], f"output.{key}", True)
         elif placement == "under_each_selected_node" and ("file_id" in output or "parent_node_id" in output):
             issue("FR-O012", "output", "file_id and parent_node_id are not allowed")
+        output_format = output.get("format")
+        if output_format is not None and output_format != "career_note":
+            issue("FR-O014", "output.format", "invalid output format")
+        if output_format == "career_note" and not (
+                domain == "career" and unit == "aggregate" and placement == "under_parent"
+                and output.get("parent_node_id") == "root"):
+            issue("FR-O014", "output.format", "career_note requires career aggregate under root")
+        if output.get("parent_node_id") == "root" and output_format != "career_note":
+            issue("FR-O014", "output.parent_node_id", "root output requires career_note")
         schedule = ScheduleSpec(kind or "", int(time[:2]), int(time[3:]), WEEKDAYS.index(weekday),
-                                day, month, anchor, invalid_anchor)
+                                day, month, anchor, invalid_anchor, week_end)
         cfg.tasks.append(TaskSpec(index, task_id, purpose.strip(), domain, persona, approval, unit or "",
                                   schedule, zone, ranges[0], ranges[1], evidence, selection, references,
-                                  OutputSpec(placement, output.get("file_id"), output.get("parent_node_id")),
+                                  OutputSpec(placement, output.get("file_id"), output.get("parent_node_id"),
+                                             output_format),
                                   Path(base_dir), not any(i.severity == "error" and i.disables_task for i in issues),
                                   tuple(issues)))
     return cfg

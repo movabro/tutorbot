@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -18,11 +19,14 @@ def floor_to_second(dt: datetime) -> datetime:
 def own_text_hash(node) -> str:
     content = unicodedata.normalize("NFC", node.content or "")
     note = unicodedata.normalize("NFC", node.note or "")
-    return "v1:" + hashlib.sha256((content + "\n" + note).encode("utf-8")).hexdigest()
+    encoded = json.dumps([content, note], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return "v2:" + hashlib.sha256(encoded).hexdigest()
 
 
 def effective_modified_ms(node, mark: BotWriteMark | None) -> int:
     modified = node.modified or 0
+    # v1 concatenated fields ambiguously. Never trust it for suppression:
+    # the next output snapshot naturally replaces it with a v2 mark.
     if mark is not None and mark.own_hash == own_text_hash(node):
         return min(modified, mark.effective_modified_ms)
     return modified
@@ -30,7 +34,7 @@ def effective_modified_ms(node, mark: BotWriteMark | None) -> int:
 
 def resolve_time_bounds(kind: str, T: datetime, tz: str | ZoneInfo,
                         prev_started_at: datetime | str | None,
-                        task_schedule) -> TimeBounds | None:
+                        task_schedule, *, success_lower: datetime | str | None = None) -> TimeBounds | None:
     T = floor_to_second(T)
     if kind == "fixed_context":
         return None
@@ -51,6 +55,13 @@ def resolve_time_bounds(kind: str, T: datetime, tz: str | ZoneInfo,
         else:
             from .schedule import first_run_lower_bound
             lower = first_run_lower_bound(task_schedule, T)
+    elif window == "since_last_success":
+        if success_lower is None:
+            raise ValueError("success lower bound must be durably established before selection")
+        lower = (datetime.fromisoformat(success_lower.replace("Z", "+00:00"))
+                 if isinstance(success_lower, str) else success_lower)
+        if lower.tzinfo is None or lower.utcoffset() is None:
+            raise ValueError("success lower bound must be timezone-aware")
     else:
         raise ValueError(f"unknown time filter: {kind}")
     return TimeBounds(kind, field, int(lower.timestamp() * 1000), int(T.timestamp() * 1000))

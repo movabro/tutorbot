@@ -37,6 +37,7 @@ class ScheduleSpec:
     month: int = 12
     quarter_anchor: str = "end"
     quarter_anchor_invalid: str | None = None
+    week_end: bool = False
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class OutputSpec:
     placement: str
     file_id: str | None = None
     parent_node_id: str | None = None
+    format: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,11 @@ class TaskSpec:
         # Diagnostics and source location do not describe the normalized task.
         for key in ("index", "base_dir", "valid", "issues"):
             values.pop(key)
+        # Preserve hashes of pre-extension tasks.
+        if not values["schedule"]["week_end"]:
+            del values["schedule"]["week_end"]
+        if values["output"]["format"] is None:
+            del values["output"]["format"]
         canonical = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return "v1:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

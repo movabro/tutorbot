@@ -1,6 +1,11 @@
 timezone = "Asia/Seoul"
 db_path = "data/tutorbot.sqlite3"
 
+# 피드백 규칙은 실환경 M6 리허설 전까지 비활성으로 유지합니다.
+# 별도 규칙 파일을 써도 전역 enabled 값은 이 설정 파일에서 지정합니다.
+[feedback_rules]
+enabled = false
+
 [dynalist]
 token_env = "DYNALIST_TOKEN"          # token comes from env only
 

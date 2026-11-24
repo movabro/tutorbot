@@ -48,6 +48,22 @@ def resolve_persona(task: TaskSpec) -> PersonaResult:
     return PersonaResult(path, text, digest, len(data), len(lines), None)
 
 
+def confirm_persona(task: TaskSpec, persona: PersonaResult) -> bool:
+    """Require a private review, independent full-hash comparison and explicit consent."""
+    print(f"Normalized hash: {persona.hash}\nLines: {persona.line_count}")
+    print("Privately review the configured file and independently compute its normalized hash.")
+    try:
+        if input("Independently computed full hash: ").strip() != persona.hash:
+            return False
+        if input("Approve this reviewed persona? [y/N] ").strip().lower() != "y":
+            return False
+    except EOFError:
+        return False
+    # Do not approve a different file version if it changed during the review.
+    current = resolve_persona(task)
+    return not current.error and current.hash == persona.hash
+
+
 def approval_gate(conn, task: TaskSpec, persona: PersonaResult, *, interactive: bool,
                   dry_run: bool) -> GateResult:
     """Check hash-bound authorization without consuming a one-use approval."""
@@ -69,15 +85,8 @@ def approval_gate(conn, task: TaskSpec, persona: PersonaResult, *, interactive: 
         return GateResult(True, kind, approval[0] if kind == "once" and not dry_run else None)
     if dry_run:
         return GateResult(True, "preview_unapproved", preview=True)
-    if interactive:
-        print(f"Persona: {persona.path}\nHash: {persona.hash}\n"
-              f"Lines: {persona.line_count}\n" + "\n".join((persona.text or "").splitlines()[:40]))
-        try:
-            answer = input("Approve persona? [y/N] ")
-        except EOFError:
-            answer = ""
-        if answer.strip().lower() == "y":
-            approval_id = store.grant_approval(conn, task.id, persona.path, persona.hash,
-                                               kind, clock.now_iso())
-            return GateResult(True, kind, approval_id if kind == "once" else None)
+    if interactive and confirm_persona(task, persona):
+        approval_id = store.grant_approval(conn, task.id, persona.path, persona.hash,
+                                           kind, clock.now_iso())
+        return GateResult(True, kind, approval_id if kind == "once" else None)
     return GateResult(False, "awaiting_approval")

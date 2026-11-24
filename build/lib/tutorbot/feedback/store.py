@@ -45,6 +45,42 @@ def prev_started_at(conn, task_id: str) -> str | None:
     return row[0] if row else None
 
 
+def success_window_lower(conn, task_id: str, config_hash: str, initial_lower: str) -> str:
+    """Persist the initial bound and return the most recent fully written start.
+
+    Call only after the task gate and lock have been acquired.
+    """
+    with _transaction(conn, immediate=True):
+        conn.execute("INSERT OR IGNORE INTO feedback_success_anchor(task_id,config_hash,initial_lower) "
+                     "VALUES(?,?,?)", (task_id, config_hash, initial_lower))
+        anchor = conn.execute("SELECT initial_lower FROM feedback_success_anchor "
+                              "WHERE task_id=? AND config_hash=?", (task_id, config_hash)).fetchone()[0]
+        rows = conn.execute(
+            "SELECT id,started_at,units_total,units_ok,outputs_enqueued FROM feedback_task_run "
+            "WHERE task_id=? AND config_hash=? AND status='succeeded' "
+            "AND units_failed=0 AND units_skipped_cap=0 ORDER BY started_at DESC,id DESC",
+            (task_id, config_hash)).fetchall()
+        for row in rows:
+            outputs = conn.execute("SELECT root_op_key,status FROM feedback_output WHERE task_run_id=?",
+                                   (row[0],)).fetchall()
+            if (row[2] <= 0 or row[3] != row[2] or len(outputs) < row[2]
+                    or row[4] != len(outputs)):
+                continue
+            complete = True
+            for output in outputs:
+                key = output[0]
+                prefix = key + ":line:"
+                ops = conn.execute(_OUTPUT_OPS_SQL,
+                                   (key, prefix, prefix[:-1] + ";", len(prefix), prefix)).fetchall()
+                if output[1] != "written" or not any(op[0] == key for op in ops) or any(
+                        op[1] != "done" for op in ops):
+                    complete = False
+                    break
+            if complete:
+                return row[1]
+        return anchor
+
+
 def sweep_interrupted(conn, *, current_run_id: int, now_iso: str) -> int:
     with _transaction(conn, immediate=True):
         rows = conn.execute("SELECT id, task_id FROM feedback_task_run "
@@ -170,6 +206,13 @@ def load_bot_write_marks(conn, file_ids: Iterable[str]) -> dict[tuple[str, str],
     return {(r[0], r[1]): BotWriteMark(r[2], r[3]) for r in rows}
 
 
+_OUTPUT_OPS_SQL = (
+    "SELECT op_key,status,attempts,result_node_id,last_error FROM write_op WHERE op_key=? "
+    "UNION ALL SELECT op_key,status,attempts,result_node_id,last_error FROM write_op "
+    "WHERE op_key>=? AND op_key<? AND substr(op_key,1,?)=?"
+)
+
+
 def sync_output_status(conn, *, now_iso: str) -> SyncResult:
     written = failed = pending = 0
     late = set()
@@ -179,11 +222,11 @@ def sync_output_status(conn, *, now_iso: str) -> SyncResult:
         for output in outputs:
             key = output[2]
             prefix = key + ":line:"
-            ops = conn.execute("SELECT op_key,status,attempts,result_node_id FROM write_op "
-                               "WHERE op_key=? OR substr(op_key,1,?)=?",
-                               (key, len(prefix), prefix)).fetchall()
+            ops = conn.execute(_OUTPUT_OPS_SQL,
+                               (key, prefix, prefix[:-1] + ";", len(prefix), prefix)).fetchall()
             root = next((op for op in ops if op[0] == key), None)
-            bad = any(op[1] == "skipped" or (op[1] == "failed" and op[2] >= 5) for op in ops)
+            bad = any(op[1] == "skipped" or (op[1] == "failed" and op[2] >= 5
+                      and op[4] != "unknown_outcome_reconcile") for op in ops)
             if bad:
                 failed += 1
                 conn.execute("UPDATE feedback_output SET status='failed',error='write_failed' WHERE id=?",

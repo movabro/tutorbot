@@ -13,6 +13,8 @@
 > 개정 이력(rev2, Reviewer FAIL 반영): ①건너뜀 결정을 게이트보다 먼저 처리(D-41) ②`feedback run` 구현 경로·종료 코드 매핑(D-42, §10.4/§11.4/§15.2) ③봇 쓰기에 의한 `modified_*` 재선택을 실측과 무관하게 방어(D-43) ④입력 토큰 max는 하드 캡이 아님·별도 안전 상한(D-10 개정, D-44) ⑤반복식 봇 판정(D-45) ⑥읽기 전용 명령은 migrate 안 함(D-46) ⑦doctor 전용 파일 ID 헬퍼(D-47) ⑧마일스톤 의존성 재배치(§18) ⑨FR-T067에 2/31 추가 ⑩자리표시자 우선 규칙(D-48) ⑪폴백 TOML 골든 JSON(D-53) ⑫보조 타입 정의(§10.5) ⑬~⑳ P3 항목(⑬FR-R027 결번 ⑭FR-T066 이중 기록 제거(D-41) ⑮`created_last_24h` 틈(R-17) ⑯프롬프트 구분자 무력화·페르소나 정규화(D-51) ⑰dry-run 승인 미리보기(D-50) ⑱폴백 파서 실패 격리(D-49) ⑲references 자손 안내(D-52) ⑳누락 TC 보강).
 >
 > 개정 이력(rev3, Reviewer 재검증 FAIL 반영): ①TC-E30을 M5로 이동하고 M4 완료 조건을 E21~E29로 조정, TC-E06/E07의 `finalize_after_flush` 명시, TC-E24 페르소나를 `always_allowed`로 명시 ②건너뜀 ERROR 로그를 경합 승자·패자 각 1회로 통일(D-41, §8.4, §11.1 `_record_skip`, TC-E21/E23) ③§5.3 `--allow-placeholders` 설명을 D-48·TC-C17과 일치 ④`InputTooLarge`·`build_units`·`floor_to_second` 정의 추가(§10.1, §10.4, §10.5) ⑤모든 TC를 AC에 연결(AC-22~AC-24 신설, §20.2) ⑥D-43 수식을 §7.3의 `min(...)`과 일치, 개정 이력 번호 정정, FR-R003과 `feedback run` 종료 코드 3의 관계 명시(§11.4).
+>
+> 승인된 확장 rev4: §23이 이 문서의 해당 충돌 부분에 우선한다. 기존 시간 필터·일반 weekly 동작과 기존 도메인은 유지한다. §23은 명세 작업 자체의 문서 수정만 허용하며 소스·설정 변경은 Developer 단계다.
 
 ## 1. 목표와 범위
 
@@ -1429,6 +1431,8 @@ REFERENCES>>>
 
 ## 14. 페르소나와 승인
 
+> §23.6의 개인정보 보호 및 안전 확인 절차가 이 절의 원문 출력·비대화형 승인 규정보다 우선한다.
+
 ### 14.1 경로 해석·읽기 (D-36, 보안)
 
 ```python
@@ -2024,6 +2028,77 @@ tutorbot [-c CONFIG] feedback status   [--task ID] [--limit N] [--json]
 | 구현 단계와 수용 기준, 테스트 계획·케이스 표 | §18, §19, §20 |
 | 위험·미해결·임의 가정 | §21 |
 | 기존 템플릿·how_to_use 갱신 계획 | §22 |
+
+## 23. 승인된 운영 확장과 M4~M6 실행 명세
+
+### 23.1 목표 및 범위, 현재 실태
+
+M4~M6를 완수하고 아래 다섯 **task**(네 업무 범주)를 추가한다. 기존 `[domains.*]`와 기존 학습·도메인 처리, `*_since_last_run`, 일반 weekly 및 네 출력 조합은 그대로다. 이 절의 새 옵션을 선택한 작업에만 다른 의미를 적용한다. 기존 §1.3의 root 직접 자식 금지는 career 출력에 한해 해제한다.
+
+코드 재조사 결과: M1~M3 상당 부분, 마이그레이션 003, 선택·시간·스케줄·승인 helper, `FeedbackRuleOut`, `output.enqueue_result`, `build_units`와 저장소는 존재한다. 그러나 `service.py`는 단위 계획만 있고 stage/명령/finalize가 없으며, 피드백 prompt 파일, CLI와 pipeline 연결도 없다. 기존 테스트는 구성요소·저장소·다섯 번째 쓰기 복구 위주이며 전체 M4~M6 통과를 입증하지 않는다. 테스트를 실행한 결과라는 뜻은 아니다. 현재 `config.toml`에는 feedback task가 없고 기존 도메인은 모두 활성이다. 기존 timer는 08~22시 짝수시 2시간 간격이므로 자정과 11/17시를 충족하지 못한다.
+
+기존 설정의 career 문서 ID는 요청의 정정 ID와 **대소문자 1자**가 다르다. Developer는 추측하지 말고 사용자 요청에서 괄호 안에 명시된 **정확한 정정 ID**를 선택해 실제 접근·선택·출력 대상을 모두 검증한다. 기존 `[domains.career].file_ids`의 변경은 기존 도메인 동작 변경이므로 자동 수정하지 않는다. 사용자 확인 전에는 두 ID가 동일 문서라고 가정하거나 운영 쓰기를 하지 않는다. 나머지 ID는 기존 설정의 study/work/life[0]/personal_tasks/life[1]/devlog 순으로 각각 study/work/일상/개인과업/family/log에 대응하는지 온라인 읽기로 검증한다. 로그 문서는 피드백 소스에 넣지 않는다. ID·실제 문서 내용·개인정보·비밀은 로그, 리허설 결과 및 응답에 노출하지 않는다.
+
+### 23.2 입출력 및 데이터 구조
+
+**새 시간 값** `created_since_last_success`, `modified_since_last_success`를 추가한다. 기존 `*_since_last_run`의 상태 무관 직전 `started_at`, skip 포함 및 첫 창은 절대 변경하지 않는다. 새 값의 하한은 같은 task와 동일 `config_hash`에 대해 완전히 성공한 가장 최근 실행의 `started_at`이며 상한은 현재 고정 `T`, 창은 `[L,T)`다. 선택에서 생성 또는 수정은 같은 source를 두 개 선언하여 합집합·노드 ID 중복 제거한다. modified에는 D-43을 적용한다.
+
+완전 성공은 모든 선택 단위와 모든 목적지의 필수 `write_op`가 `done`이고 `feedback_output`이 `written`, `units_failed=0`, `units_skipped_cap=0`인 경우다. 기존 `succeeded`는 pending 쓰기에도 부여될 수 있으므로 그 상태만으로는 성공 하한이 아니다. 빈 선택 `skipped`, 실패, interrupted, pending, manual 실패는 성공이 아니다. 승인된 강제 manual 실행도 동일한 완전 성공 조건이면 성공 하한이 된다. 늦은 쓰기 실패 시 그 행은 성공 하한에서 제외한다. 과거 완료 행 판정은 관계된 출력과 op를 확인하며, 출력이 없는 행은 성공으로 간주하지 않는다.
+
+아직 완전 성공이 없는 최초 창은 daily 24시간, weekly 7일, 아래 `work_slots`는 3시간이다. 실패가 반복되어 최초 창이 이동하면서 누락되지 않도록 같은 task/config_hash의 최초 평가에서 계산한 하한을 durable하게 고정한다. `004` 마이그레이션에 `feedback_success_anchor(task_id, config_hash, initial_lower, PRIMARY KEY(task_id,config_hash))`를 추가한다. 게이트 통과와 task lock 획득 후 선택을 계산하기 전에 `INSERT OR IGNORE`와 조회를 한 트랜잭션으로 수행하므로 실행 행 없이 상한 초과로 연기되어도 anchor는 남는다. 기존 task 이력만 있는 새 설정은 첫 평가에서 새 anchor를 만든다. 빈 선택도 anchor를 보존한다. dry-run은 임시 DB에만 기록한다. 시각 역행 시 빈 창을 처리하고 하한을 뒤로 이동시키지 않는다. 선택 수가 상한을 초과하면 **새 success 기반 작업만** 실행 행·LLM 없이 연기하고 안전 경고를 남긴다. 상한을 늘리거나 범위를 좁힐 때까지 연기하므로 조용한 누락을 피한다.
+
+**스케줄 확장**:
+
+* `schedule="work_slots"`: `timezone="Asia/Seoul"`만 허용, 고정 현지 슬롯 08/11/14/17/20. key는 `YYYY-MM-DD@HH:00`, 지정 시각은 그 슬롯 시작. 다음 슬롯 전까지 지연 실행 가능, 지난 슬롯 보충 없음. 20시 슬롯은 다음 날 08시 미만까지 유지하되 다음 날 자정 평가에서 재실행하지 않는다. 최초 하한은 T-3h이며 20→08의 12시간 공백은 성공 하한으로 이어진다. 다른 schedule 전용 필드는 오류. 슬롯은 최초 성공 이후 시간 간격이 아닌 현지 벽시계 기준이다.
+* `schedule="weekly"`, 새 boolean `schedule_week_end=true`는 weekly에만 허용하며 다른 weekly 필드 및 기본 동작을 그대로 둔다. 이 옵션은 기존 `schedule_weekday`/`schedule_time`과 동시 사용 금지. 월요일 00:00에 **막 종료된** ISO 주의 key를 사용하고 다음 월요일 직전까지 늦은 평가를 허용한다. 예: 2026-11-30 00:00은 2026-W48, 12-07 00:00은 W49. 일요일 00:00에는 해당 주가 아직 끝나지 않았다. 각 key에 기록이 있으면 상태 무관 재실행 금지; 여러 주 중단 후 보충 없음. 주의 범위는 `[이전 월요일 00:00, 종료 월요일 00:00)`이다. `next_due`, list, validate, `--at`, 연도 경계에도 동일 규칙을 적용한다.
+* timer는 기존 틱을 삭제하지 않고 `00,08,10,11,12,14,16,17,18,20,22`의 합집합으로 변경한다. 기존 전체 pipeline도 새 틱에서 실행되므로 호출·비용·중복 효과를 Developer가 dry-run과 회귀 테스트로 확인하고 운영 적용 전 사용자에게 알린다. `Persistent=true`는 정확한 실시간 실행을 보장하지 않으며 중단 후 현재 슬롯/주만 평가한다.
+
+**career 출력**: `output.placement="under_parent"`, `file_id`는 정정된 career ID, `parent_node_id="root"`, `unit="aggregate"`, 새 `output.format="career_note"`를 명시한다. 이 형식만 허용된 경로이며 다른 output은 기존 형식이다. root의 직접 자식 content는 `🤖 [task-id] {정제된 한 줄 제목} !(YYYY-MM-DD) #tutorbot`, 날짜는 평가 `T`의 Asia/Seoul 날짜다. note는 첫 줄 writer marker 다음에 정제된 구체 피드백 및 evidence를 담고 하위 줄 op는 만들지 않는다. 정제 후 feedback이 비어 있으면 career 단위는 실패하며 제목 또는 marker만으로 성공시키지 않는다. evidence가 없으면 그 사실을 note에 표시한다. LLM 내용의 `#`와 `!(`는 기존 정제 규칙을 적용하고 시스템 태그·날짜는 별도 구성한다. 날짜·태그가 200자 절단에 사라지지 않도록 제목을 먼저 제한한다. 나머지 네 조합의 출력 레이아웃은 불변이다. root 단일 op도 `feedback_output`과 같은 트랜잭션에 적재하며 `sync_output_status`는 해당 root가 done일 때 written으로 처리한다.
+
+### 23.3 운영 설정 및 페르소나 마련
+
+실제 ID 값은 민감한 운영 데이터로 취급하고 여기에 복제하지 않는다. Developer는 사용자 요청의 ID를 대소문자 그대로 실제 `config.toml`에 설정하고 기존 도메인 프로필은 보존한다. 공통 source는 `parent_node_id="root"`, `scope="descendants"`이며 root 자체와 봇 하위 트리는 제외한다. selection의 `context_scope="self_and_descendants"`; references는 필요한 내용이 누락되지 않도록 `tags_any=[]`, `time="fixed_context"`로 노드별 본문·노트를 읽고 토큰 절삭을 표시한다. 아래 selection마다 동일 source를 created/modified의 새 success 필터로 두 번 선언한다. 단 career selection은 변경 여부와 무관한 `fixed_context`다.
+
+| task/domain | selection 및 태그 | references | unit/배치 및 일정 | 페르소나 |
+|---|---|---|---|---|
+| `study` / study | study; 기존 `[tags].study` | study | per_node/선택 노드 자식, daily 00:00 | 목표 분야 베테랑 전문가 |
+| `work` / work | work; 기존 `[domains.work].tags` | work | per_node/선택 노드 자식, work_slots | 목표·방향·어려움 해결 베테랑 |
+| `family-events` / life | family; 기존 `[domains.life].tags` 다섯 값 | family | per_node/선택 노드 자식, daily 00:00 | 따뜻하고 육아·부모·아내를 챙기는 집사 |
+| `career-daily` / career | career; 기존 `[domains.career].tags` 두 값, fixed_context | career, work, 일상, 개인과업, study | aggregate/career root, career_note, daily 00:00 | 근거와 불확실성을 구분하는 전문가 진단 |
+| `career-weekly` / career | career; 위와 동일 | 위와 동일 | aggregate/career root, career_note, weekly 종료 | 같은 career 전문가 |
+
+네 범주의 persona Markdown은 설정 기준 디렉터리 내부에 두고 개인정보 없이 관점·톤·안전 지침만 작성한다. study/work/career는 기존 템플릿을 검토·완성하고 family 전용 파일을 추가한다. `persona_approval="user_approved_before_use"`를 명시하고 두 career task 각각 승인한다. 사용자 요청의 기능 승인과 persona 내용의 해시별 사용 승인은 별개다. 승인 전 dry-run만 가능하며 변경 시 재승인. 참고 문서 전체를 외부 LLM에 전송할 수 있으므로 실제 LLM 리허설도 전송 범위·비용 확인 후 Developer가 수행한다.
+
+위 root 범위와 태그는 이용자가 특정 하위 노드 ID를 제공하지 않아 정한 운영 후보이지 확인된 실제 문서 구조가 아니다. online validate로 선택 수와 접근을 확인하고 범위·태그가 의도와 다르면 **운영 시작 전 사용자 확인**을 받는다. 특히 study는 기존 목표/덤프 태그까지 자동 추가하지 않는다. career fixed_context가 비면 기존 빈 선택 정책대로 skip한다. career의 참조는 현재 스냅샷이지 과거 주간 스냅샷이 아니다. 주간 전문가 진단의 대상 기간은 종료된 주로 프롬프트에 명시하되 시점 없는 과거 텍스트나 종료 후 변경된 노드의 과거 내용을 복원하거나 주간 변경 이력을 보장하지 않는다. 사용자가 엄밀한 주간 이력만 요구하면 별도 이력 저장 승인 전 출시를 보류한다.
+
+### 23.4 쓰기·동시성·크래시 복구
+
+`pipeline.FileLock`은 변경하지 않는다. `run`과 `feedback run` 모두 같은 전역 잠금을 얻고 stage별 task lock, SQLite `(task_id,cycle_key)` UNIQUE, 원자적 승인 소비를 사용한다. 75 변환은 기존 명세의 획득 구간에 한정한다. pre-flush → 상태 동기화 → interrupted sweep → 평가 → enqueue → flush → 동기화/finalize 순서를 두 진입점에 동일하게 적용한다. 다른 프로세스나 외부 편집이 이 잠금을 따르지 않는 경우 분산 exactly-once는 보장하지 않는다.
+
+§11.4의 DB 준비와 전역 잠금 순서보다 이 절이 우선한다. `feedback run`은 사전 검증 후 전역 잠금을 먼저 획득하고, 그 안에서 DB 연결·dry-run 복사·마이그레이션을 수행한다. 다른 실행이 전역 잠금과 SQLite 쓰기 잠금을 함께 보유해도 DB 접근을 기다리거나 실패하기 전에 75를 반환하기 위한 순서다.
+
+`writer.py`는 **수정하지 않는다**. 현재 구현은 피드백 insert의 다섯 번째 시도 직전 `attempts=5,status=failed,last_error=unknown_outcome_reconcile`을 원격 호출 전에 커밋한다. 프로세스가 그 커밋 직후 호출 전에 죽어도 다음 flush가 새 `doc_read`로 marker를 찾는다. 있으면 등록·done, 없으면 재전송하지 않고 확정 실패, 읽기 실패면 불확실 상태 유지·하위 op 대기다. 따라서 호출 전 크래시도 중복 없이 복구되지만 자동 재시도 성공은 보장하지 않는다. 원격 적용 후 응답 유실·부모/자식 각 경우에도 같은 정책이다. marker는 작업 실행·대상·줄별 결정적이며 first-note-line에 둔다. 성공 하한은 모든 op가 written으로 확정되기 전 전진하지 않는다. 부분 성공 후 다음 주기에 다시 분석되면 일부 대상에 새로운 피드백이 생길 수 있으며, 서로 다른 실행 간 exactly-once는 주장하지 않는다.
+
+주의: 현재 writer는 **최종 불확실 상태가 아닌** 시도에서 reconcile용 fresh read 실패 시 오래된 `indices`를 사용하거나 index 없이 진행할 수 있다. 피드백 진입점의 flush adapter는 writer 변경 없이 `doc_edit` 직전 모든 feedback insert에 대해 대상 문서를 새로 읽고 부모 직계 자식의 정확한 marker를 확인한다. 읽기 실패·부모 불명·marker 다중 일치는 `UnknownOutcome`으로 fail closed, 원격 edit 금지. 이미 존재하는 marker는 해당 node ID를 결과 위치에 돌려주고 미존재 insert만 전송하며, 배치의 원래 insert 순서대로 ID를 재조립한다. 전송 결과 유실은 기존 writer의 UnknownOutcome 경로에 맡긴다. adapter는 비피드백 op를 변형하지 않고 같은 파일 혼합 배치 및 parent-op 의존성, 재조회 실패, 동시 외부 쓰기 한계를 검증한다. 이 adapter가 writer의 반환 ID 계약을 보존할 수 없거나 Dynalist 읽기 일관성을 확인하지 못하면 실운영을 중지한다.
+
+### 23.5 파일별 생성/수정 및 구현 순서
+
+1. `feedback/models.py`, `loader.py`, `schedule.py`, `timefilter.py`, `sources.py`, `store.py`, `db/migrations/004_*.sql`: 옵션 검증, 슬롯·주 종료·success anchor와 합집합, migration 및 호환성 구현. 003은 이미 적용될 수 있으므로 수정하지 않는다. success 하한 및 `window_lower`를 진단 가능하게 기록한다.
+2. `feedback/prompt.py`, `llm/prompts/feedback_rule.md`, `tokens.py`, `llm/schemas.py`, `feedback/output.py`, `feedback/service.py`: §11·§13 M4 전체, career note, adapter, 원자적 적재·확정 및 안전 로그. 기존 `LLMClient`만 호출. 예산·축약·프롬프트 인젝션 방어·예외 격리 유지.
+3. `feedback/commands.py`, `cli.py`, `pipeline.py`: §15 CLI, 승인, 읽기 전용 validate/list/status, 두 진입점의 stage와 sync. 기존 stage 및 FileLock 정의는 변경하지 않는다. `run --no-feedback`, fake LLM, dry-run 임시 DB 및 코드 75 구현. task 실패는 기존 pipeline을 partial로 격리.
+4. `deploy/tutorbot.timer`, 실제 `config.toml`, `config.example.toml`, `docs/templates/personas/`의 네 페르소나, `docs/templates/feedback-rules.example.toml`, `docs/how_to_use.md`: 승인된 설정·안전한 예제·운영 설명. 기존 도메인 필드와 tag 배열을 변경하거나 제거하지 않는다. career 기존 프로필 ID 불일치는 위 확인 절차를 따른다. 문서의 미구현 경고는 완전한 M6 검증 후에만 제거한다.
+5. `tests/test_feedback_*`, `tests/fakes.py`와 관련 pipeline/CLI 회귀 테스트: §19 전체 및 아래 추가 AC를 자동화한다. 변경 금지: `dynalist/writer.py`, `dynalist/tree.py`, `engine/domains.py`, `engine/study.py`, `llm/client.py`, `parse/classify.py`, `pipeline.FileLock`. M4→M5→M6 순으로 각 단계와 전체 `pytest`를 통과한다.
+
+### 23.6 엣지 케이스 및 수용 기준
+
+* **시간**: 기존 since_last_run의 skipped/failed/manual/DST 회귀 불변. 새 필터는 실패·skip·pending·일부 성공·상한 초과에서 하한을 전진시키지 않음. 첫 실패 연속 후 최초 하한 보존, 마지막 완전 성공 후 `[L,T)`의 생성/수정 합집합과 밀리초 경계, config 변경·dry-run·시계 역행 검증. 재실행 간 중복 가능성은 명시.
+* **일정**: 07:59/08:00/10:59/11:00/14/17/20, 자정, 다음 날 08시와 중단 후 복귀; 주간 일요일 23:59:59/월요일 00:00, 지연, ISO 연도 경계 및 과거 주 미보충 검증. 기존 weekly 일요일 00:00 TC-S05는 계속 통과. timer의 기존 틱 유지 및 추가 틱의 기존 pipeline 영향 검증.
+* **출력**: study/work/family 변경된 비봇 노드별 직접 자식, 선택 0건 skip; career 두 task는 정확한 정정 문서 root 직계 자식 하나, 단일 제목·현지 날짜·구체 note·marker, 자식 줄 없음. 일반 네 unit×placement 조합은 LLM 호출 수·목적지·내용·원자성 및 TC-E01~E04 전부 검증. 부모 삭제, 다중 문서의 같은 node ID, 봇 쓰기 수정시각 보정 검증.
+* **복구**: 별도 프로세스를 kill하여 다섯 번째 시도 상태 커밋 직후 `doc_edit` 호출 전, 원격 적용 직후 응답 전, DB done 직전 각각 재시작. root 및 줄 op 모두 marker 최대 1개, 결과 매핑·하위 대기·등록·실패/불확실 상태와 success 하한을 단언한다. 읽기 불가 후 복구, marker 부재·중복, 중간 시도 fresh read 실패 및 혼합 배치 adapter 테스트. `test_feedback_final_reconcile.py`, `test_feedback_reproduced_defects.py`, `test_m2.py`도 회귀 통과.
+* **승인·동시성**: 미승인 실제 호출·쓰기 0, dry-run 미리보기·실DB/원격 쓰기 0, 해시 변경 재승인, once 원자 소비/롤백. 두 프로세스 경쟁에서 한 task/cycle 행과 단일 결과, 전역 잠금 경합 75, 강제·stale lock·중단 복구 확인.
+* **안전한 페르소나 확인**: §14.2~14.3의 경로·앞 40줄 출력 및 `--yes --hash` 비대화형 승인은 이 절이 대체한다. 원문·경로·작업/문서 ID를 승인 화면에 출력하지 않는다. 사용자는 설정에서 경로를 비공개로 확인하여 파일 전체를 별도 열람하고, §14.1의 정규화(UTF-8 BOM 제거, 줄바꿈 통일, 각 줄 끝 공백·탭과 끝 빈 줄 제거, 마지막 LF 하나)를 독립적으로 적용한 `v1:` SHA-256 전체 해시를 계산한다. 명령은 정규화 해시와 줄 수만 표시하며 사용자가 독립 계산한 전체 해시를 입력해 일치시킨 뒤 별도 `y/N` 질문에 `y`를 입력해야 승인한다. 불일치·거부·EOF·비대화형·`--yes` 또는 `--hash`는 승인하지 않는다. 확인 후 파일을 다시 읽어 해시가 바뀌었거나 읽을 수 없으면 승인하지 않는다. standing과 once 모두 같은 절차를 적용하고 dry-run과 pipeline은 승인하지 않는다. 자동 승인은 금지하며 `always_allowed`의 기존 명시적 정책 의미는 변경하지 않는다.
+* **전역 잠금 경합**: `feedback run`의 잠금 획득이 경합하면 개인정보 없는 고정 메시지 `tutorbot is already running`을 WARNING 로그와 stderr에 기록하고 종료 코드 75를 반환한다.
+* **통합·보안**: 선택/참조 문서와 페르소나 온라인 접근 확인; 실제 LLM 호출에는 전송 동의, 비용·호출 상한, 전용 안전 테스트 문서와 쓰기 범위 확인 후에만 리허설. 기존 writer는 ID를 로깅하므로 writer를 고치지 않고 CLI의 로깅 필터·안전 오류 요약으로 ID·본문·노트·페르소나 원문·토큰/키를 로그·테스트 리포트·표준 출력에서 제거하고 예외에도 누출되지 않는지 테스트한다. 가짜 LLM 및 FakeDynalist 통합, `run --no-feedback`, 기존 학습·모든 도메인·writer·LLM 제한 회귀, 전체 pytest 통과가 완료 조건이다. 온라인 리허설은 이 설계 단계에서 실행하지 않는다.
 
 
 

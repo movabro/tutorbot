@@ -97,7 +97,7 @@ def test_migration_from_v2_preserves_existing_data(tmp_path, monkeypatch):
     assert db.migrate(conn) == 2
     conn.execute("INSERT INTO run_log(run_date,started_at,status) VALUES('2026-11-24',?,'ok')", (NOW,))
     monkeypatch.setattr(db, "_migrations", all_migrations)
-    assert db.migrate(conn) == db.migrate(conn) == 3
+    assert db.migrate(conn) == db.migrate(conn) == 4
     assert conn.execute("SELECT COUNT(*) FROM run_log").fetchone()[0] == 1
     assert store.has_feedback_tables(conn)
     conn.close()

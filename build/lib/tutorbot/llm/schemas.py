@@ -13,6 +13,28 @@ class SchemaValidationError(ValueError):
 
 
 @dataclass
+class FeedbackRuleOut:
+    summary: str
+    feedback: list[str]
+    evidence: list[str]
+
+    @classmethod
+    def validate(cls, value: Any) -> "FeedbackRuleOut":
+        if not isinstance(value, dict):
+            raise SchemaValidationError("feedback rule output must be an object")
+        summary = value.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            raise SchemaValidationError("feedback rule summary must be a non-empty string")
+        arrays = []
+        for key, count, length in (("feedback", 20, 800), ("evidence", 10, 300)):
+            items = value.get(key)
+            if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
+                raise SchemaValidationError(f"feedback rule {key} must be a list of strings")
+            arrays.append([item.strip()[:length] for item in items[:count] if item.strip()])
+        return cls(summary.strip()[:120], arrays[0], arrays[1])
+
+
+@dataclass
 class GoalMetaOut:
     title: str
     level: str | None = None

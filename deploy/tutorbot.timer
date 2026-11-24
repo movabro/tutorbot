@@ -1,8 +1,8 @@
 [Unit]
-Description=Run TutorBot Every Two Hours from 08:00 to 22:00 Asia/Seoul
+Description=Run TutorBot at configured times Asia/Seoul
 
 [Timer]
-OnCalendar=*-*-* 08,10,12,14,16,18,20,22:00:00 Asia/Seoul
+OnCalendar=*-*-* 00,08,10,11,12,14,16,17,18,20,22:00:00 Asia/Seoul
 Persistent=true
 Unit=tutorbot.service
 

@@ -30,14 +30,13 @@ def test_main_logs_configuration_failure(tmp_path, monkeypatch):
     old_level = app_logger.level
     old_propagate = app_logger.propagate
     try:
-        with pytest.raises(ValueError, match="invalid career source domain"):
-            cli.main(["-c", str(config_path), "run"])
+        assert cli.main(["-c", str(config_path), "run"]) == 1
 
         log_text = (tmp_path / "logs" / "tutorbot.log").read_text(encoding="utf-8")
         assert "CLI invocation started" in log_text
         assert "Command started: run" in log_text
         assert "Command initialization failed" in log_text
-        assert "invalid career source domain: personal_tasks" in log_text
+        assert "invalid career source domain: personal_tasks" not in log_text
     finally:
         for handler in list(app_logger.handlers):
             if handler.get_name() == "tutorbot-file":
@@ -76,7 +75,7 @@ def test_run_logs_readable_summary_instead_of_json(tmp_path, monkeypatch, capsys
         logging=SimpleNamespace(log_file=str(log_path)),
         llm=SimpleNamespace(provider="gemini", model_smart="test", model_fast="test"),
     )
-    conn = object()
+    conn = SimpleNamespace(close=lambda: None)
     result = SimpleNamespace(
         run_id=7,
         run_date="2026-11-14",
@@ -100,7 +99,7 @@ def test_run_logs_readable_summary_instead_of_json(tmp_path, monkeypatch, capsys
         output = capsys.readouterr().out.strip()
         log_text = log_path.read_text(encoding="utf-8")
         assert exit_code == 0
-        assert output == f"Run 7 (2026-11-14): ok; log: {log_path}"
+        assert output == "Run 7 (2026-11-14): ok"
         assert not output.startswith("{")
         assert "Run started:" in log_text
         assert "Run completed: id=7 date=2026-11-14 status=ok" in log_text
@@ -130,6 +129,9 @@ def test_cmd_run_passes_only_current_run_log_segment_to_devlog(tmp_path, monkeyp
     class Conn:
         def execute(self, *_args):
             return None
+
+        def close(self):
+            pass
 
     conn = Conn()
     result = SimpleNamespace(
@@ -189,7 +191,7 @@ def test_cmd_run_dry_run_does_not_save_devlog_log(tmp_path, monkeypatch, capsys)
         llm=SimpleNamespace(provider="gemini", model_smart="test", model_fast="test"),
         domains={"devlog": SimpleNamespace(enabled=True, file_ids=["devlog-file"])},
     )
-    conn = object()
+    conn = SimpleNamespace(close=lambda: None)
     result = SimpleNamespace(
         run_id=13, run_date="2026-11-20", status="ok", stats={}, errors=[],
     )

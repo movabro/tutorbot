@@ -1,6 +1,13 @@
-# 미구현 설계 초안: 모든 필드와 동작은 제안이며 현재 실행되지 않음.
-# - config.toml에 복사해도 동작하지 않으며 [domains.*]에 넣으면 검증 오류가 날 수 있음.
-# - 현재 로더, TOML 폴백 파서 및 스케줄러는 이 형식을 지원하지 않음.
+# 미완성 설계 초안: 운영 검증과 실환경 리허설이 끝나지 않았음.
+# - 로더, 스케줄러, 실행·CLI 경로가 구현되어 있으나 M6 실환경 리허설은 미완료임.
+# - 이 파일은 자리표시자가 포함된 예시임. 운영 설정의 [feedback_rules] enabled=false를 유지할 것.
+#   별도 규칙 파일의 전역 옵션은 적용되지 않으며 enabled는 config.toml에서 지정함.
+# - 아래 설명은 과거 설계 기록이며 현재 구현이 전혀 없다는 표현은 현황이 아님.
+# - 현재 스키마와 제한은 docs/specs/spec_v0.5.md, 특히 §23을 따름.
+# - work_slots는 Asia/Seoul 08/11/14/17/20시, schedule_week_end=true는 종료된 ISO 주를 평가함.
+# - created_since_last_success/modified_since_last_success는 완전 쓰기 성공 시각을 하한으로 사용함.
+#   최초 하한은 고정되며 success 기반 선택이 상한을 넘으면 누락하지 않고 실행을 연기함.
+# - career_note는 career domain의 aggregate/under_parent/root에서만 허용하며 본문에 제목, 노트에 피드백을 씀.
 #
 # 용어와 설정 읽는 법
 # - 피드백(feedback)은 이 파일의 설정에 따라 만들어지는 평가나 설명임.
@@ -46,7 +53,7 @@
 #   - "quarterly": 지정된 timezone 기준 분기당 최대 1회 실행 (기본: 분기 말일인 3/31, 6/30, 9/30, 12/31 00:00.
 #     schedule_quarter_anchor = "start"를 적으면 분기 시작일인 1/1, 4/1, 7/1, 10/1 00:00)
 #   - "yearly": 지정된 timezone 기준 연간 최대 1회 실행 (사용자가 실행일 지정 : 1년중 몇월 몇일 몇시에 실행할지, default 값 : 매년 12월 31일, 자정)
-# - 주기 필드는 schedule 문자열 옆의 같은 task에 두는 미구현 설계 제안임.
+# - 주기 필드는 schedule 문자열 옆의 같은 task에 둠.
 #   - schedule_time: daily/weekly/monthly/quarterly/yearly의 현지 실행 시간, 24시간제 "HH:MM" 문자열.
 #     예: schedule_time = "09:30". 생략하면 "00:00". each_run에는 적용하지 않음.
 #   - schedule_weekday: weekly의 요일, "monday" ~ "sunday" 문자열. 예: schedule_weekday = "monday".
@@ -179,7 +186,8 @@
 # 페르소나 경로와 승인 관련 내용
 # - persona_path는 향후 이 설정 파일이 있는 디렉터리를 시작점으로 하는 상대 경로로 제안함.
 # - 이 파일의 persona_path 예시 경로는 설정 파일이 저장소 루트에 있다고 가정함.
-# - persona_approval의 user_approved_before_use는 페르소나 사용 전 사용자 승인 정책이며 페르소나 추천과 승인 절차는 미구현임.
+# - persona_approval의 user_approved_before_use는 페르소나 사용 전 사용자 승인 정책임.
+#   승인 명령은 일부 구현되었으나 운영 검증은 미완료이며 페르소나 추천은 제공하지 않음.
 #
 # 토큰과 근거 관련 내용
 # - input_token_range와 output_token_range는 LLM을 한 번 호출할 때의 입력·출력 토큰 목표이며 보장이나 비용 상한이 아님.
@@ -333,7 +341,7 @@ persona_path = "docs/templates/personas/career.md" # 이 설정 파일이 있는
 persona_approval = "user_approved_before_use" # 페르소나를 쓰기 전에 사용자 승인이 필요하지만 추천과 승인 절차는 아직 없음
 unit = "aggregate" # 고른 기록들을 묶어 피드백(feedback)을 하나 만듦
 schedule = "daily" # timezone에 적은 지역의 날짜 하루에 실행 자체는 최대 한 번
-schedule_time = "00:00" # 미구현 실행 시각 예시; 생략해도 자정
+schedule_time = "00:00" # 실행 시각 예시; 생략해도 자정
 timezone = "Asia/Seoul" # 서울의 날짜를 하루의 기준으로 삼음
 input_token_range = [2000, 8000] # LLM 한 번 호출에서 읽을 글은 2000~8000 토큰이 목표
 output_token_range = [400, 1200] # LLM 한 번 호출에서 쓸 답은 400~1200 토큰이 목표

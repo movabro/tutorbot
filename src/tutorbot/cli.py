@@ -4,9 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import shutil
+import sqlite3
 import sys
-import tempfile
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,20 @@ from .dynalist.client import DynalistClient, DynalistError
 from .dynalist.tree import NodeIndex
 from .llm.client import LLMClient, LLMError
 from .pipeline import run_pipeline, save_devlog_run_log
+
+
+class _SafeLogFilter(logging.Filter):
+    """Keep legacy component messages from exposing remote or model content."""
+
+    def filter(self, record):
+        if record.name.startswith(("tutorbot.parse", "tutorbot.engine", "tutorbot.dynalist",
+                                   "tutorbot.llm")):
+            record.msg = "Component event"
+            record.args = ()
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        return True
 
 
 def _configure_logging(settings=None) -> Path:
@@ -33,6 +47,7 @@ def _configure_logging(settings=None) -> Path:
             existing.close()
 
     handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.addFilter(_SafeLogFilter())
     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     handler.set_name("tutorbot-file")
     app_logger.addHandler(handler)
@@ -43,13 +58,16 @@ def _log_run_result(result) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Run completed: id=%s date=%s status=%s", result.run_id, result.run_date, result.status)
     for stage, values in result.stats.items():
-        if isinstance(values, dict):
-            details = ", ".join(f"{key}={value}" for key, value in values.items())
+        if stage == "dry_run_pending_ops":
+            details = f"count={len(values)}"
+        elif isinstance(values, dict):
+            details = ", ".join(f"{key}={value}" for key, value in values.items()
+                                if isinstance(value, (int, float, bool)))
         else:
-            details = str(values)
+            details = "available"
         logger.info("%s: %s", stage, details)
-    for error in result.errors:
-        logger.error("%s", error)
+    if result.errors:
+        logger.error("Run reported %d error(s)", len(result.errors))
 
 
 class _DefaultFakeLLMBackend:
@@ -92,6 +110,8 @@ class _DefaultFakeLLMBackend:
                 "feedback": [],
                 "evidence": [],
             }
+        if task == "feedback_rule":
+            return {"summary": "가짜 피드백 요약", "feedback": ["가짜 피드백 항목"], "evidence": []}
         return {}
 
 
@@ -104,15 +124,15 @@ def cmd_init_db(args, settings) -> int:
     cl = _client(settings)
     try:
         _files, missing = _configured_files(cl, settings)
-    except DynalistError as e:
-        print(f"Dynalist request failed: {e}", file=sys.stderr)
+    except DynalistError:
+        print("Dynalist request failed", file=sys.stderr)
         return 1
     if missing:
-        print(f"! file(s) not found in file/list: {', '.join(missing)}", file=sys.stderr)
+        print(f"! configured documents unavailable: {len(missing)}", file=sys.stderr)
         return 1
 
     conn = db.connect(settings.db_path)
-    print(f"schema_version={db.migrate(conn)} path={settings.db_path}")
+    print(f"schema_version={db.migrate(conn)}")
     return 0
 
 
@@ -133,30 +153,38 @@ def _configured_file_ids(settings) -> list[str]:
     return list(dict.fromkeys(file_ids))
 
 
-def _configured_files(cl: DynalistClient, settings) -> tuple[dict[str, dict], list[str]]:
+def _configured_files(cl: DynalistClient, settings, ids=None) -> tuple[dict[str, dict], list[str]]:
     """Fetch Dynalist's file list and identify configured IDs that are absent."""
     files = {f["id"]: f for f in cl.file_list()}
-    missing = [fid for fid in _configured_file_ids(settings) if fid not in files]
+    missing = [fid for fid in (ids if ids is not None else _configured_file_ids(settings)) if fid not in files]
     return files, missing
+
+
+def _doctor_file_ids(settings):
+    rules = getattr(settings, "feedback_rules", None)
+    return list(dict.fromkeys(_configured_file_ids(settings) + (rules.file_ids() if rules else [])))
 
 
 def cmd_doctor(args, settings) -> int:
     """Read-only checks; with --write-test also insert->edit->delete a scratch node (M0 smoke test)."""
-    cl = _client(settings)
     llm_client = None
     try:
-        files, missing = _configured_files(cl, settings)
+        cl = _client(settings)
+        ids = _doctor_file_ids(settings)
+        _files, missing = _configured_files(cl, settings, ids)
         if missing:
-            print(f"! file(s) not found in file/list: {', '.join(missing)}")
+            print(f"! configured documents unavailable: {len(missing)}")
             return 1
-        for fid in _configured_file_ids(settings):
+        rules = getattr(settings, "feedback_rules", None)
+        writable = set(_configured_file_ids(settings) + (rules.write_file_ids() if rules else []))
+        for fid in ids:
             idx = NodeIndex.from_doc_read(fid, cl.doc_read(fid))
-            print(f"{fid} ({files[fid].get('title')}): {len(idx.by_id) - 1} nodes, version={idx.version}")
-            if args.write_test:
+            print(f"document: {len(idx.by_id) - 1} nodes")
+            if args.write_test and fid in writable:
                 _write_test(cl, fid)
                 llm_client = _llm_test(settings, llm_client)
-    except DynalistError as e:
-        print(f"Dynalist request failed: {e}", file=sys.stderr)
+    except Exception:  # noqa: BLE001 - diagnostics must not expose remote exceptions
+        print("Dynalist request failed", file=sys.stderr)
         return 1
     return 0
 
@@ -217,6 +245,28 @@ def _llm_test(settings, client=None):
 
 
 def cmd_run(args, settings) -> int:
+    if args.dry_run and not getattr(args, "fake_llm", False):
+        budget = getattr(getattr(settings, "llm", None), "daily_token_budget", None)
+        rules = getattr(settings, "feedback_rules", None)
+        print("주의: dry-run은 Dynalist에 쓰지 않지만 학습·도메인 및 피드백의 선택·참조 "
+              "문서 본문과 노트, 페르소나를 실제 외부 LLM에 전송할 수 있으며 비용이 발생합니다. "
+              f"설정된 일일 토큰 예산: {budget if budget is not None else '없음'}, "
+              f"피드백 실행별 호출 상한: {getattr(rules, 'max_llm_calls_per_run', '없음')}. "
+              "다른 단계의 호출·비용도 확인하세요.")
+        if not getattr(args, "allow_external_llm", False):
+            print("전송에 동의하려면 --allow-external-llm을 지정하세요.", file=sys.stderr)
+            return 2
+    if args.dry_run:
+        with closing(db.connect(":memory:")) as conn:
+            if Path(settings.db_path).exists():
+                with closing(sqlite3.connect(Path(settings.db_path).resolve().as_uri() + "?mode=ro", uri=True)) as src:
+                    src.backup(conn)
+            return _cmd_run(args, settings, conn)
+    with closing(db.connect(settings.db_path)) as conn:
+        return _cmd_run(args, settings, conn)
+
+
+def _cmd_run(args, settings, conn) -> int:
     log_file = _configure_logging(settings)
     try:
         log_start = log_file.stat().st_size
@@ -224,19 +274,10 @@ def cmd_run(args, settings) -> int:
         log_start = 0
     logger = logging.getLogger(__name__)
     logger.info(
-        "Run started: date=%s dry_run=%s fake_llm=%s",
-        args.date or "today",
+        "Run started: dry_run=%s fake_llm=%s",
         args.dry_run,
         args.fake_llm,
     )
-    if args.dry_run:
-        src = Path(settings.db_path)
-        tmp = Path(tempfile.mkdtemp()) / "dry.sqlite3"
-        if src.exists():
-            shutil.copy(src, tmp)
-        conn = db.connect(tmp)
-    else:
-        conn = db.connect(settings.db_path)
     db.migrate(conn)
 
     cl = _client(settings)
@@ -267,10 +308,20 @@ def cmd_run(args, settings) -> int:
             llm,
             run_date=args.date,
             dry_run=bool(args.dry_run),
+            feedback=not getattr(args, "no_feedback", False),
         )
-    except Exception:
-        logger.exception("Run aborted")
-        raise
+    except RuntimeError as exc:
+        if isinstance(exc.__cause__, BlockingIOError):
+            logger.warning("Run lock unavailable")
+            print("tutorbot is already running", file=sys.stderr)
+            return 75
+        logger.error("Run aborted")
+        print("Run aborted", file=sys.stderr)
+        return 1
+    except Exception:  # noqa: BLE001 - runtime exceptions can contain private content
+        logger.error("Run aborted")
+        print("Run aborted", file=sys.stderr)
+        return 1
     _log_run_result(res)
     if not args.dry_run:
         for handler in logging.getLogger("tutorbot").handlers:
@@ -302,7 +353,7 @@ def cmd_run(args, settings) -> int:
                     "failed": devlog_write.failed,
                 }
                 if devlog_write.errors or devlog_write.failed:
-                    res.errors.extend(devlog_write.errors or ["devlog run log write failed"])
+                    res.errors.append("devlog run log write failed")
                     res.status = "partial"
                 conn.execute(
                     "UPDATE run_log SET status=?,error_summary=?,dynalist_changes=dynalist_changes+? WHERE id=?",
@@ -313,15 +364,19 @@ def cmd_run(args, settings) -> int:
                         res.run_id,
                     ),
                 )
-            except Exception:
-                logger.exception("Devlog run log write failed")
+            except Exception:  # noqa: BLE001 - remote exceptions can contain private content
+                logger.error("Devlog run log write failed")
                 res.errors.append("devlog run log write failed")
                 res.status = "partial"
                 conn.execute(
                     "UPDATE run_log SET status='partial',error_summary=? WHERE id=?",
                     ("; ".join(res.errors), res.run_id),
                 )
-    print(f"Run {res.run_id} ({res.run_date}): {res.status}; log: {log_file}")
+    print(f"Run {res.run_id} ({res.run_date}): {res.status}")
+    if "feedback" in res.stats:
+        print("feedback: " + json.dumps(
+            {key: value for key, value in res.stats["feedback"].items()
+             if isinstance(value, int)}, ensure_ascii=False))
     return 0 if res.status in ("ok", "partial") else 1
 
 
@@ -342,6 +397,9 @@ def cmd_stats(args, settings) -> int:
     out = {
         "recent_runs": [dict(r) for r in runs],
         "llm_by_task": [dict(r) for r in by_task],
+        "feedback_task_runs": [dict(r) for r in conn.execute(
+            "SELECT id,task_id,cycle_key,status,started_at,units_ok,units_failed,llm_calls,"
+            "prompt_tokens,completion_tokens FROM feedback_task_run ORDER BY id DESC LIMIT 20")],
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
@@ -365,7 +423,41 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--dry-run", action="store_true")
     r.add_argument("--date")
     r.add_argument("--fake-llm", action="store_true")
+    r.add_argument("--allow-external-llm", action="store_true",
+                   help="consent to sending document content to a real LLM during preview")
+    r.add_argument("--no-feedback", action="store_true")
     sub.add_parser("stats")
+    fb = sub.add_parser("feedback")
+    fb_sub = fb.add_subparsers(dest="feedback_cmd", required=True)
+    for name in ("validate", "list", "run", "approve", "status"):
+        command = fb_sub.add_parser(name)
+        if name != "status":
+            command.add_argument("--rules-file")
+            command.add_argument("--base-dir")
+        if name in ("validate", "list", "status"):
+            command.add_argument("--json", action="store_true")
+        if name == "validate":
+            command.add_argument("--online", action="store_true")
+            command.add_argument("--allow-placeholders", action="store_true")
+        if name in ("list", "run"):
+            command.add_argument("--at")
+        if name == "run":
+            command.add_argument("--task", action="append")
+            command.add_argument("--dry-run", action="store_true")
+            command.add_argument("--fake-llm", action="store_true")
+            command.add_argument("--force", action="store_true")
+            command.add_argument("--allow-external-llm", action="store_true",
+                                 help="consent to sending selected and reference content for a real LLM preview")
+        if name == "approve":
+            group = command.add_mutually_exclusive_group(required=True)
+            group.add_argument("--task")
+            group.add_argument("--all", action="store_true")
+            command.add_argument("--yes", action="store_true")
+            command.add_argument("--hash")
+            command.add_argument("--revoke", action="store_true")
+        if name == "status":
+            command.add_argument("--task")
+            command.add_argument("--limit", type=int, choices=range(1, 201), default=20)
     try:
         args = p.parse_args(command_line)
     except SystemExit as exc:
@@ -375,13 +467,50 @@ def main(argv: list[str] | None = None) -> int:
     if is_run_invocation:
         logger.info("Command started: %s", args.cmd)
     try:
-        settings = load_settings(args.config if Path(args.config).exists() else None)
+        if args.cmd == "feedback" and args.feedback_cmd == "status":
+            from types import SimpleNamespace
+
+            from .config import _parse_toml_bytes
+            config_path = Path(args.config)
+            prefix = []
+            if config_path.exists():
+                for line in config_path.read_text(encoding="utf-8").splitlines():
+                    if line.lstrip().startswith("["):
+                        break
+                    prefix.append(line)
+            root = _parse_toml_bytes("\n".join(prefix).encode())
+            settings = SimpleNamespace(db_path=root.get("db_path", "data/tutorbot.sqlite3"))
+        elif args.cmd == "feedback":
+            settings = load_settings(args.config if Path(args.config).exists() else None,
+                                     rules_file=getattr(args, "rules_file", None),
+                                     base_dir=getattr(args, "base_dir", None),
+                                     allow_placeholders=getattr(args, "allow_placeholders", False))
+        else:
+            settings = load_settings(args.config if Path(args.config).exists() else None)
     except (OSError, ValueError, TypeError):
         if is_run_invocation:
-            logger.exception("Command initialization failed")
-        raise
+            logger.error("Command initialization failed")
+        print("Command initialization failed", file=sys.stderr)
+        return 1
     if args.cmd == "doctor":
         _configure_logging(settings)
+    if args.cmd == "feedback":
+        from .feedback.commands import dispatch
+        safe_filter = _SafeLogFilter()
+        protected_logs = [logging.getLogger(name) for name in (
+            "tutorbot.parse.classify", "tutorbot.dynalist.writer", "tutorbot.llm.client")]
+        for component_log in protected_logs:
+            component_log.addFilter(safe_filter)
+        try:
+            return dispatch(args, settings)
+        except Exception:  # noqa: BLE001 - CLI errors must not expose private content
+            print("Feedback command failed", file=sys.stderr)
+            if args.feedback_cmd == "run":
+                print("feedback exit=1 reasons=execution_failed:1", file=sys.stderr)
+            return 1
+        finally:
+            for component_log in protected_logs:
+                component_log.removeFilter(safe_filter)
     return {
         "init-db": cmd_init_db,
         "doctor": cmd_doctor,

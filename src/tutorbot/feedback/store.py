@@ -45,6 +45,42 @@ def prev_started_at(conn, task_id: str) -> str | None:
     return row[0] if row else None
 
 
+def success_window_lower(conn, task_id: str, config_hash: str, initial_lower: str) -> str:
+    """Persist the initial bound and return the most recent fully written start.
+
+    Call only after the task gate and lock have been acquired.
+    """
+    with _transaction(conn, immediate=True):
+        conn.execute("INSERT OR IGNORE INTO feedback_success_anchor(task_id,config_hash,initial_lower) "
+                     "VALUES(?,?,?)", (task_id, config_hash, initial_lower))
+        anchor = conn.execute("SELECT initial_lower FROM feedback_success_anchor "
+                              "WHERE task_id=? AND config_hash=?", (task_id, config_hash)).fetchone()[0]
+        rows = conn.execute(
+            "SELECT id,started_at,units_total,units_ok,outputs_enqueued FROM feedback_task_run "
+            "WHERE task_id=? AND config_hash=? AND status='succeeded' "
+            "AND units_failed=0 AND units_skipped_cap=0 ORDER BY started_at DESC,id DESC",
+            (task_id, config_hash)).fetchall()
+        for row in rows:
+            outputs = conn.execute("SELECT root_op_key,status FROM feedback_output WHERE task_run_id=?",
+                                   (row[0],)).fetchall()
+            if (row[2] <= 0 or row[3] != row[2] or len(outputs) < row[2]
+                    or row[4] != len(outputs)):
+                continue
+            complete = True
+            for output in outputs:
+                key = output[0]
+                prefix = key + ":line:"
+                ops = conn.execute(_OUTPUT_OPS_SQL,
+                                   (key, prefix, prefix[:-1] + ";", len(prefix), prefix)).fetchall()
+                if output[1] != "written" or not any(op[0] == key for op in ops) or any(
+                        op[1] != "done" or not op[3] for op in ops):
+                    complete = False
+                    break
+            if complete:
+                return row[1]
+        return anchor
+
+
 def sweep_interrupted(conn, *, current_run_id: int, now_iso: str) -> int:
     with _transaction(conn, immediate=True):
         rows = conn.execute("SELECT id, task_id FROM feedback_task_run "
@@ -53,7 +89,18 @@ def sweep_interrupted(conn, *, current_run_id: int, now_iso: str) -> int:
             conn.execute("UPDATE feedback_task_run SET status='failed', error='interrupted', finished_at=? "
                          "WHERE id=?", (now_iso, row[0]))
             conn.execute("DELETE FROM feedback_task_lock WHERE task_id=?", (row[1],))
-        return len(rows)
+    if rows:
+        log.warning("feedback_interrupted code=FR-R026 count=%d", len(rows))
+    return len(rows)
+
+
+def interrupt_current_runs(conn, run_id: int, *, now_iso: str) -> int:
+    """Fail unfinished rows when the current stage cannot complete."""
+    with _transaction(conn, immediate=True):
+        cur = conn.execute(
+            "UPDATE feedback_task_run SET status='failed',error='interrupted',finished_at=? "
+            "WHERE run_id=? AND status='started'", (now_iso, run_id))
+        return cur.rowcount
 
 
 def _pid_dead(pid: int) -> bool:
@@ -83,11 +130,14 @@ def try_lock(conn, task_id: str, *, now_iso: str, stale_minutes: int, host: str,
                 if updated.rowcount:
                     stolen = (row[4],)
             conn.execute("DELETE FROM feedback_task_lock WHERE task_id=?", (task_id,))
-            log.warning("feedback_lock_stolen task_id=%s", task_id)
+            log.warning("feedback_lock_stolen code=lock_stolen count=1")
         token = uuid.uuid4().hex
         conn.execute("INSERT INTO feedback_task_lock(task_id,owner_pid,owner_host,owner_token,acquired_at,heartbeat_at) "
                      "VALUES(?,?,?,?,?,?)", (task_id, pid, host, token, now_iso, now_iso))
-        return LockResult(True, token=token, stolen_run_ids=stolen)
+        result = LockResult(True, token=token, stolen_run_ids=stolen)
+    if stolen:
+        log.warning("feedback_interrupted code=FR-R026 count=1")
+    return result
 
 
 def heartbeat(conn, task_id: str, token: str, now_iso: str, *, task_run_id: int | None = None) -> bool:
@@ -179,6 +229,7 @@ _OUTPUT_OPS_SQL = (
 
 def sync_output_status(conn, *, now_iso: str) -> SyncResult:
     written = failed = pending = 0
+    missing_parent = permanent_failure = other_skipped = 0
     late = set()
     with _transaction(conn, immediate=True):
         outputs = conn.execute("SELECT id,task_run_id,root_op_key,status FROM feedback_output "
@@ -193,33 +244,83 @@ def sync_output_status(conn, *, now_iso: str) -> SyncResult:
                       and op[4] != "unknown_outcome_reconcile") for op in ops)
             if bad:
                 failed += 1
+                if any(op[1] == "skipped" and isinstance(op[4], str)
+                       and op[4].startswith("parent ") and op[4].endswith(" not in document")
+                       for op in ops):
+                    missing_parent += 1
+                if any(op[1] == "failed" and op[2] >= 5
+                       and op[4] != "unknown_outcome_reconcile" for op in ops):
+                    permanent_failure += 1
+                if not any(op[1] == "failed" and op[2] >= 5
+                           and op[4] != "unknown_outcome_reconcile"
+                           or op[1] == "skipped" and isinstance(op[4], str)
+                           and op[4].startswith("parent ") and op[4].endswith(" not in document")
+                           for op in ops):
+                    other_skipped += 1
                 conn.execute("UPDATE feedback_output SET status='failed',error='write_failed' WHERE id=?",
                              (output[0],))
                 cur = conn.execute("UPDATE feedback_task_run SET status='failed',error='write_failed_later',"
                                    "finished_at=? WHERE id=? AND status='succeeded'", (now_iso, output[1]))
                 if cur.rowcount:
                     late.add(output[1])
-            elif root and all(op[1] == "done" for op in ops):
+                conn.execute("UPDATE feedback_task_run SET error='write_failed',finished_at=? "
+                             "WHERE id=? AND status='failed' AND error='write_unconfirmed'",
+                             (now_iso, output[1]))
+            elif root and all(op[1] == "done" and op[3] for op in ops):
                 written += 1
                 conn.execute("UPDATE feedback_output SET status='written',result_node_id=?,"
                              "written_at=COALESCE(written_at,?) WHERE id=?", (root[3], now_iso, output[0]))
             else:
                 pending += 1
+        # Repair only legacy provisional failures, never genuine failed runs.
+        rows = conn.execute(
+            "SELECT id,units_total,units_ok,outputs_enqueued FROM feedback_task_run "
+            "WHERE status='failed' AND error='write_unconfirmed' "
+            "AND units_failed=0 AND units_skipped_cap=0").fetchall()
+        for row in rows:
+            outputs = conn.execute("SELECT root_op_key,status FROM feedback_output WHERE task_run_id=?",
+                                   (row[0],)).fetchall()
+            if row[1] <= 0 or row[2] != row[1] or len(outputs) < row[1] or row[3] != len(outputs):
+                continue
+            complete = True
+            for key, status in outputs:
+                prefix = key + ":line:"
+                ops = conn.execute(_OUTPUT_OPS_SQL,
+                                   (key, prefix, prefix[:-1] + ";", len(prefix), prefix)).fetchall()
+                if status != "written" or not any(op[0] == key for op in ops) or any(
+                        op[1] != "done" or not op[3] for op in ops):
+                    complete = False
+                    break
+            if complete:
+                conn.execute("UPDATE feedback_task_run SET status='succeeded',error=NULL,finished_at=? "
+                             "WHERE id=?", (now_iso, row[0]))
+    if missing_parent:
+        log.warning("feedback_output_failed code=FR-R022 count=%d", missing_parent)
+    if permanent_failure:
+        log.error("feedback_output_failed code=FR-R025 count=%d", permanent_failure)
+    if other_skipped:
+        log.warning("feedback_output_failed reason=outbox_skipped count=%d", other_skipped)
     return SyncResult(written, failed, pending, tuple(sorted(late)))
 
 
 def finalize_runs(conn, run_id: int, *, now_iso: str) -> dict[str, int]:
     counts = {"succeeded": 0, "failed": 0}
+    unconfirmed = 0
     with _transaction(conn, immediate=True):
         rows = conn.execute("SELECT id,units_failed FROM feedback_task_run WHERE run_id=? AND status='started'",
                             (run_id,)).fetchall()
         for row in rows:
-            bad = row[1] or conn.execute("SELECT 1 FROM feedback_output WHERE task_run_id=? AND status='failed'",
-                                         (row[0],)).fetchone()
+            statuses = [output[0] for output in conn.execute(
+                "SELECT status FROM feedback_output WHERE task_run_id=?", (row[0],))]
+            unconfirmed += statuses.count("pending_write")
+            bad = row[1] or "failed" in statuses
             state = "failed" if bad else "succeeded"
             conn.execute("UPDATE feedback_task_run SET status=?,error=?,finished_at=? WHERE id=?",
-                         (state, "write_failed" if bad else None, now_iso, row[0]))
+                         (state, "write_failed" if bad else None,
+                          now_iso, row[0]))
             counts[state] += 1
+    if unconfirmed:
+        log.warning("feedback_output_unconfirmed count=%d", unconfirmed)
     return counts
 
 

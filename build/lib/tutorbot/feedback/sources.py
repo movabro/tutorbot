@@ -55,8 +55,9 @@ def _walk(index, parent_id, flags, *, include_parent, max_depth=None, nested_tag
                 stack.extend((child, depth + 1) for child in reversed(node.children))
 
 
-def _source_nodes(task, source, index, flags, marks, T, prev_started_at, first_lower):
-        bounds = resolve_time_bounds(source.time, T, task.timezone, prev_started_at or first_lower, task)
+def _source_nodes(task, source, index, flags, marks, T, prev_started_at, first_lower, success_lower=None):
+        bounds = resolve_time_bounds(source.time, T, task.timezone, prev_started_at or first_lower, task,
+                                     success_lower=success_lower)
         wanted = frozenset(source.tags_any)
         for node, depth in _walk(index, source.parent_node_id, flags,
                                  include_parent=source.scope != "descendants",
@@ -66,7 +67,7 @@ def _source_nodes(task, source, index, flags, marks, T, prev_started_at, first_l
                 yield node, depth
 
 
-def resolve_selection(task, indices, bot_flags, bot_marks, T, prev_started_at, first_lower):
+def resolve_selection(task, indices, bot_flags, bot_marks, T, prev_started_at, first_lower, *, success_lower=None):
         selected = []
         seen = set()
         for position, source in enumerate(task.selection):
@@ -74,7 +75,7 @@ def resolve_selection(task, indices, bot_flags, bot_marks, T, prev_started_at, f
             if index is None:
                 continue
             for node, _ in _source_nodes(task, source, index, bot_flags.get(source.file_id, {}),
-                                         bot_marks, T, prev_started_at, first_lower):
+                                         bot_marks, T, prev_started_at, first_lower, success_lower):
                 ref = NodeRef(source.file_id, node.id)
                 if ref not in seen:
                     seen.add(ref)
@@ -102,13 +103,13 @@ def render_reference(index, bot_flags, source_index, source, nodes):
         return ReferenceBlock(source_index, source, lines, sum(line.tokens for line in lines))
 
 
-def resolve_references(task, indices, bot_flags, bot_marks, T, prev_started_at, first_lower):
+def resolve_references(task, indices, bot_flags, bot_marks, T, prev_started_at, first_lower, *, success_lower=None):
         blocks = []
         for position, source in enumerate(task.references):
             index = indices.get(source.file_id)
             if index is None:
                 continue
             nodes = list(_source_nodes(task, source, index, bot_flags.get(source.file_id, {}),
-                                       bot_marks, T, prev_started_at, first_lower))
+                                       bot_marks, T, prev_started_at, first_lower, success_lower))
             blocks.append(render_reference(index, bot_flags.get(source.file_id, {}), position, source, nodes))
         return blocks

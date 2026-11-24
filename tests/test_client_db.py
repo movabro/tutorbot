@@ -96,7 +96,7 @@ def test_doctor_reports_dynalist_error_without_traceback(monkeypatch, capsys):
     rc = cli.cmd_doctor(SimpleNamespace(write_test=False), object())
 
     assert rc == 1
-    assert capsys.readouterr().err == "Dynalist request failed: HTTP403: Access denied\n"
+    assert capsys.readouterr().err == "Dynalist request failed\n"
 
 
 def test_doctor_checks_unique_ids_from_enabled_domains(monkeypatch, capsys):
@@ -161,7 +161,7 @@ def test_init_db_checks_unique_active_and_career_source_files_before_migration(m
     assert cli.cmd_init_db(SimpleNamespace(), settings) == 0
     assert client.list_calls == 1
     assert calls == [("connect", "test.sqlite3"), ("migrate", "conn")]
-    assert capsys.readouterr().out == "schema_version=7 path=test.sqlite3\n"
+    assert capsys.readouterr().out == "schema_version=7\n"
 
 
 def test_init_db_missing_configured_file_exits_before_migration(monkeypatch, capsys):
@@ -188,9 +188,7 @@ def test_init_db_missing_configured_file_exits_before_migration(monkeypatch, cap
     monkeypatch.setattr(cli.db, "migrate", lambda conn: pytest.fail("migration must not run"))
 
     assert cli.cmd_init_db(SimpleNamespace(), settings) == 1
-    assert capsys.readouterr().err == (
-        "! file(s) not found in file/list: missing-study, work, career, missing-source\n"
-    )
+    assert capsys.readouterr().err == "! configured documents unavailable: 4\n"
 
 
 def test_5xx_retried():
@@ -245,14 +243,14 @@ def test_crash_after_apply_is_unknown_outcome_and_not_retried():
 
 def test_migrate_creates_schema_idempotently():
     conn = connect(":memory:")
-    assert migrate(conn) == 3
-    assert migrate(conn) == 3
+    assert migrate(conn) == 4
+    assert migrate(conn) == 4
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"goal", "concept", "study_entry", "quiz_card", "quiz_attempt", "bot_node",
             "write_op", "knowledge_dump", "run_log", "llm_call", "meta",
             "domain_state", "domain_run", "personal_task", "personal_task_progress",
             "completion_event"} <= names
-    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "4"
     # FK / unique sanity
     conn.execute("INSERT INTO write_op(op_key,file_id,action,payload_json,seq,created_at) "
                  "VALUES('k','f','insert','{}',1,'t')")

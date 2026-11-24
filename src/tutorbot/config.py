@@ -286,7 +286,8 @@ class Settings:
     feedback_rules: FeedbackRulesCfg = field(default_factory=FeedbackRulesCfg)
 
     @classmethod
-    def model_validate(cls, d: dict[str, Any], *, base_dir: Path | None = None) -> "Settings":
+    def model_validate(cls, d: dict[str, Any], *, base_dir: Path | None = None,
+                       allow_placeholders: bool = False) -> "Settings":
         domains = _default_domains()
         for name, profile in d.get("domains", {}).items():
             if name not in domains:
@@ -320,6 +321,7 @@ class Settings:
             feedback_rules=parse_feedback_rules(
                 d.get("feedback_rules"), base_dir=base_dir or Path.cwd(),
                 default_timezone=d.get("timezone", "Asia/Seoul"),
+                allow_placeholders=allow_placeholders,
             ),
         )
 
@@ -339,7 +341,8 @@ class Settings:
 
 
 def load_settings(path: str | Path | None = None, dotenv_path: str | Path = ".env",
-                  *, rules_file: str | Path | None = None, base_dir: str | Path | None = None) -> Settings:
+                  *, rules_file: str | Path | None = None, base_dir: str | Path | None = None,
+                  allow_placeholders: bool = False) -> Settings:
     load_dotenv(dotenv_path)
     selected_rules = rules_file or os.environ.get("TUTORBOT_FEEDBACK_RULES_FILE")
     ignored_tasks = False
@@ -353,7 +356,8 @@ def load_settings(path: str | Path | None = None, dotenv_path: str | Path = ".en
             ignored_tasks = bool(raw_feedback["tasks"])
             raw_config["feedback_rules"] = {k: v for k, v in raw_feedback.items() if k != "tasks"}
         s = Settings.model_validate(raw_config,
-                                    base_dir=Path(base_dir) if base_dir else Path(path).resolve().parent)
+                                    base_dir=Path(base_dir) if base_dir else Path(path).resolve().parent,
+                                    allow_placeholders=allow_placeholders)
     if selected_rules:
         if ignored_tasks:
             log.warning("config.toml feedback_rules.tasks ignored: rules file in use")
@@ -363,7 +367,7 @@ def load_settings(path: str | Path | None = None, dotenv_path: str | Path = ".en
                 raw = _parse_toml_bytes(f.read())
             loaded = parse_feedback_rules(raw.get("feedback_rules"), base_dir=rules_dir,
                                           source=str(selected_rules), default_timezone=s.timezone,
-                                          is_rules_file=True)
+                                          is_rules_file=True, allow_placeholders=allow_placeholders)
         except (OSError, ValueError) as exc:
             loaded = FeedbackRulesCfg(source=str(selected_rules), base_dir=rules_dir)
             loaded.issues.append(ConfigIssue("FR-G007", "error", "feedback_rules",

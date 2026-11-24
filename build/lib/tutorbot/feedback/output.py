@@ -4,12 +4,13 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from urllib.parse import quote
 
 from .. import clock
 from ..dynalist.writer import enqueue_op
 from ..render import marker
 from . import store
-from .models import NodeRef, TargetSnapshot, UnitSpec
+from .models import NodeRef, TargetBlock, TargetSnapshot, UnitSpec
 
 
 def sanitize_text(s: str, max_len: int) -> str:
@@ -22,7 +23,8 @@ def sanitize_text(s: str, max_len: int) -> str:
 
 def enqueue_result(conn, *, task, task_run_id: int, run_id: int, unit: UnitSpec, write_to: NodeRef,
                    out, local_date: str, bot_tag: str, truncated: bool, over_target: bool,
-                   snapshot: TargetSnapshot | None, input_hash: str | None = None) -> int:
+                   snapshot: TargetSnapshot | None, input_hash: str | None = None,
+                   selected_target: TargetBlock | None = None) -> int:
     """Enqueue one target. An enclosing transaction groups all targets of a unit."""
     get = out.get if isinstance(out, dict) else lambda key: getattr(out, key)
     summary = sanitize_text(get("summary"), 120)
@@ -31,8 +33,8 @@ def enqueue_result(conn, *, task, task_run_id: int, run_id: int, unit: UnitSpec,
     feedback = [value for item in get("feedback")[:20] if (value := sanitize_text(item, 800))]
     evidence = [value for item in get("evidence")[:10] if (value := sanitize_text(item, 300))]
     body = {"summary": summary, "feedback": feedback, "evidence": evidence}
-    root_key = f"fr:{task.id}:{task_run_id}:{unit.ref}:{write_to.node_id}"
-    ref = f"{task.id}:{task_run_id}:{unit.ref}:{write_to.node_id}"
+    ref = f"{task.id}:{task_run_id}:{unit.ref}:{quote(write_to.file_id, safe='')}:{write_to.node_id}"
+    root_key = f"fr:{ref}"
     with store._transaction(conn):
         existing = conn.execute("SELECT id FROM feedback_output WHERE task_run_id=? AND unit_ref=? "
                                 "AND target_file_id=? AND target_node_id=?",
@@ -50,14 +52,43 @@ def enqueue_result(conn, *, task, task_run_id: int, run_id: int, unit: UnitSpec,
             target_own_hash=snapshot.own_hash if snapshot else None,
             target_effective_modified_ms=snapshot.effective_modified_ms if snapshot else None,
             created_at=clock.now_iso())
+        career_note = task.output.format == "career_note"
         header = f"🤖 [{task.id}] {summary[:60]} !({local_date}) #{bot_tag}"[:200]
+        if career_note:
+            prefix = f"🤖 [{task.id}] "
+            suffix = f" !({local_date}) #{bot_tag}"
+            header = prefix + summary.replace("\n", " ")[:min(60, 200 - len(prefix) - len(suffix))] + suffix
+        if career_note and not feedback:
+            raise ValueError("empty_feedback")
+        note = ""
+        if career_note:
+            parts = [f"• {item}" for item in feedback]
+            parts.extend(f"🔎 근거: {item}" for item in evidence)
+            if not evidence:
+                parts.append("🔎 근거 없음")
+            if truncated:
+                parts.append("⚠️ 입력 일부가 잘렸습니다")
+            if over_target:
+                parts.append("⚠️ 입력이 목표 토큰 범위를 넘었습니다")
+            note = "\n".join(parts)
         enqueue_op(conn, run_id=run_id, op_key=root_key, file_id=write_to.file_id,
-                   action="insert", parent_ref=f"node:{write_to.node_id}", payload={"content": header},
+                   action="insert", parent_ref=f"node:{write_to.node_id}",
+                   payload={"content": header, **({"note": note} if career_note else {})},
                    bot_kind="feedback_rule", bot_ref_id=output_id, marker=marker("feedback_rule", ref))
+        if career_note:
+            return output_id
         lines = []
         if task.unit == "per_node" and task.output.placement == "under_parent" and unit.inputs:
             target = unit.inputs[0].ref
-            lines.append(f"🎯 대상: [{target.file_id}/{target.node_id}]")
+            excerpt = ""
+            if selected_target is not None:
+                if selected_target.selected.ref != target:
+                    raise ValueError("selected target does not match unit")
+                line = next((line for line in selected_target.lines if line.ref == target), None)
+                if line is None:
+                    raise ValueError("selected target content missing")
+                excerpt = sanitize_text(line.text.replace("\n", " "), 40)
+            lines.append(f"🎯 대상: [{target.file_id}/{target.node_id}]" + (f" {excerpt}" if excerpt else ""))
         lines.append(f"📝 {summary}")
         lines.extend(f"• {item}" for item in feedback)
         lines.extend(f"🔎 근거: {item}" for item in evidence)

@@ -24,6 +24,10 @@ from .tree import NodeIndex
 
 logger = logging.getLogger(__name__)
 
+# A fifth insert with a lost response is not a confirmed failure. Persist this
+# state so a failed doc/read cannot cause either a duplicate or a false failure.
+_UNCERTAIN_FINAL_INSERT = "unknown_outcome_reconcile"
+
 
 @dataclass
 class WriteReport:
@@ -79,7 +83,7 @@ def enqueue_op(
     return True
 
 
-def _resolve_ref(conn: sqlite3.Connection, ref: str | None) -> tuple[str | None, str]:
+def _resolve_ref(conn: sqlite3.Connection, ref: str | None, *, retry_failed: bool = False) -> tuple[str | None, str]:
     """Resolve 'node:<id>' or 'op:<op_key>' -> (node_id, state) where state is 'ready'|'wait'|'skip'."""
     if not ref:
         return None, "ready"
@@ -87,11 +91,15 @@ def _resolve_ref(conn: sqlite3.Connection, ref: str | None) -> tuple[str | None,
         return ref[5:], "ready"
     if ref.startswith("op:"):
         op_key = ref[3:]
-        row = conn.execute("SELECT status, result_node_id FROM write_op WHERE op_key=?", (op_key,)).fetchone()
+        row = conn.execute("SELECT status, result_node_id, attempts, last_error FROM write_op WHERE op_key=?", (op_key,)).fetchone()
         if row is None:
             return None, "skip"
         if row["status"] == "done" and row["result_node_id"]:
             return row["result_node_id"], "ready"
+        if row["status"] == "failed" and retry_failed and (
+            row["attempts"] < 5 or row["last_error"] == _UNCERTAIN_FINAL_INSERT
+        ):
+            return None, "wait"
         if row["status"] in ("skipped", "failed"):
             return None, "skip"
         return None, "wait"
@@ -233,19 +241,24 @@ def flush_outbox(
 
     # If any op from a previous run has attempts > 0, reconcile that file first
     prev_attempted = conn.execute(
-        "SELECT DISTINCT file_id FROM write_op WHERE status IN ('pending','failed') AND attempts > 0 AND attempts < 5"
+        "SELECT DISTINCT file_id FROM write_op WHERE status IN ('pending','failed') AND attempts > 0 "
+        "AND (attempts < 5 OR last_error=?)", (_UNCERTAIN_FINAL_INSERT,)
     ).fetchall()
     for r in prev_attempted:
         reconcile_needed.add(r["file_id"])
 
     while True:
         ops = conn.execute(
-            "SELECT * FROM write_op WHERE status IN ('pending','failed') AND attempts < 5 ORDER BY seq ASC"
+            "SELECT * FROM write_op WHERE status IN ('pending','failed') "
+            "AND (attempts < 5 OR last_error=?) ORDER BY seq ASC", (_UNCERTAIN_FINAL_INSERT,)
         ).fetchall()
         ops = [op for op in ops if op["file_id"] not in aborted_files]
         if not ops:
             break
 
+        final_reconcile_files = {
+            op["file_id"] for op in ops if op["last_error"] == _UNCERTAIN_FINAL_INSERT
+        }
         # Refresh indices for files needing reconcile or missing
         for r in ops:
             fid = r["file_id"]
@@ -255,6 +268,11 @@ def flush_outbox(
                     reconcile_needed.discard(fid)
                 except Exception as e:
                     rep.errors.append(f"doc_read({fid}): {e}")
+                    if fid in reconcile_needed and fid in final_reconcile_files:
+                        # Never reconcile against a stale snapshot or resend an
+                        # uncertain insert when a fresh read is unavailable.
+                        indices.pop(fid, None)
+                        aborted_files.add(fid)
 
         progressed = False
         wave_by_file: dict[str, list[tuple[sqlite3.Row, str | None, str | None]]] = {}
@@ -264,8 +282,12 @@ def flush_outbox(
             now_iso = clock.now_iso()
             for op in ops:
                 fid = op["file_id"]
+                if fid in aborted_files:
+                    continue
                 idx_obj = indices.get(fid)
-                parent_id, p_state = _resolve_ref(conn, op["parent_ref"])
+                parent_id, p_state = _resolve_ref(
+                    conn, op["parent_ref"], retry_failed=op["bot_kind"] == "feedback_rule_item"
+                )
                 target_id, t_state = _resolve_ref(conn, op["target_ref"])
 
                 if p_state == "skip" or t_state == "skip":
@@ -300,6 +322,13 @@ def flush_outbox(
                         progressed = True
                         continue
 
+                if op["last_error"] == _UNCERTAIN_FINAL_INSERT:
+                    # The fresh snapshot proves that the last insert did not
+                    # land. Its retry allowance is exhausted; do not resend.
+                    conn.execute("UPDATE write_op SET last_error='write_failed' WHERE id=?", (op["id"],))
+                    progressed = True
+                    continue
+
                 wave_by_file.setdefault(fid, []).append((op, parent_id, target_id))
             conn.execute("COMMIT")
         except Exception:
@@ -318,8 +347,17 @@ def flush_outbox(
                 op_ids = [op["id"] for op, _, _ in chunk]
 
                 conn.execute("BEGIN")
-                for oid in op_ids:
-                    conn.execute("UPDATE write_op SET attempts = attempts + 1 WHERE id=?", (oid,))
+                for op, _, _ in chunk:
+                    final_insert = (op["attempts"] + 1 >= 5 and op["action"] == "insert"
+                                    and op["marker"] and op["bot_kind"] in
+                                    ("feedback_rule", "feedback_rule_item"))
+                    if final_insert:
+                        # Commit before the remote call: even process death after
+                        # sending, but before handling its response, is uncertain.
+                        conn.execute("UPDATE write_op SET attempts=attempts+1, status='failed', "
+                                     "last_error=? WHERE id=?", (_UNCERTAIN_FINAL_INSERT, op["id"]))
+                    else:
+                        conn.execute("UPDATE write_op SET attempts=attempts+1 WHERE id=?", (op["id"],))
                 conn.execute("COMMIT")
 
                 try:
@@ -327,8 +365,12 @@ def flush_outbox(
                     rep.changes_sent += len(changes)
                 except UnknownOutcome as e:
                     conn.execute("BEGIN")
-                    for oid in op_ids:
-                        conn.execute("UPDATE write_op SET status='failed', last_error=? WHERE id=?", (str(e), oid))
+                    for op, _, _ in chunk:
+                        uncertain_final = (op["attempts"] + 1 >= 5 and op["action"] == "insert"
+                                           and op["marker"] and op["bot_kind"] in
+                                           ("feedback_rule", "feedback_rule_item"))
+                        conn.execute("UPDATE write_op SET status='failed', last_error=? WHERE id=?",
+                                     (_UNCERTAIN_FINAL_INSERT if uncertain_final else str(e), op["id"]))
                     conn.execute("COMMIT")
                     rep.errors.append(str(e))
                     for op, _, tid in chunk:
@@ -408,7 +450,8 @@ def flush_outbox(
             break
 
     exhausted = conn.execute(
-        "SELECT COUNT(*) FROM write_op WHERE status='failed' AND attempts >= 5"
+        "SELECT COUNT(*) FROM write_op WHERE status='failed' AND attempts >= 5 AND last_error IS NOT ?",
+        (_UNCERTAIN_FINAL_INSERT,)
     ).fetchone()[0]
     rep.failed = max(rep.failed, int(exhausted))
     return rep

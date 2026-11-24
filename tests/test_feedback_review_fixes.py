@@ -135,7 +135,7 @@ def test_migration_version_failure_rolls_back_and_retries(monkeypatch):
     assert not store.has_feedback_tables(conn)
     assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'feedback_%'").fetchone()[0] == 0
     conn.execute("DROP TRIGGER reject_version")
-    assert db.migrate(conn) == 3
+    assert db.migrate(conn) == 4
     assert store.has_feedback_tables(conn)
     conn.close()
 
@@ -148,7 +148,7 @@ def test_migration_recovers_existing_003_objects_without_losing_data(monkeypatch
     rid = insert_run(conn)
     conn.execute("DROP INDEX ix_feedback_output_target")
     conn.execute("DROP TABLE feedback_persona_approval")
-    assert db.migrate(conn) == 3
+    assert db.migrate(conn) == 4
     assert conn.execute("SELECT task_id FROM feedback_task_run WHERE id=?", (rid,)).fetchone()[0] == "test"
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='ix_feedback_output_target'").fetchone()
     assert store.has_feedback_tables(conn)

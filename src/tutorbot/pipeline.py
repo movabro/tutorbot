@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import shutil
 import sqlite3
 from dataclasses import dataclass, field
@@ -12,9 +13,9 @@ from typing import Any
 from . import clock, ingest, render
 from .dynalist.client import DynalistClient
 from .dynalist.tree import NodeIndex
-from .dynalist.writer import WriteReport, enqueue_op, flush_outbox
-from .engine.dumps import process_dumps
+from .dynalist.writer import WriteReport, enqueue_op
 from .engine.domains import process_domains
+from .engine.dumps import process_dumps
 from .engine.goals import process_goals
 from .engine.progress import update_progress
 from .engine.quiz import expire_attempts, grade_open_attempts, issue_daily_quizzes
@@ -110,6 +111,53 @@ def backup_sqlite_db(db_path: str | Path, run_date: str, keep_days: int = 7) -> 
     return dest
 
 
+class _DomainErrorConnection:
+    """Redact domain error values before SQLite receives them.
+
+    The legacy domain engine binds the diagnostic immediately before its
+    timestamp in its error INSERTs. Fail closed if that contract changes.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(sql.lower().split())
+        if normalized.startswith(("update domain_run ", "update domain_state ",
+                                  "replace into domain_run", "replace into domain_state")):
+            raise RuntimeError("unsupported domain persistence")
+        if normalized.startswith(("insert into domain_run(", "insert into domain_state(")):
+            if "'error'" in normalized:
+                columns = normalized.split("(", 1)[1].split(")", 1)[0].split(",")
+                error_column = "last_error" if "domain_state(" in normalized else "error"
+                compact = normalized.replace(" ", "")
+                shapes = ("values(?,?,?,'error',?,?)", "values(?,'devlog',?,'error',?,?)",
+                          "values(?,?,?,'error',?,?,?)", "values(?,'devlog',?,'error',?,?,?)")
+                if (columns[-2:] not in ([error_column, "updated_at"], [error_column, "created_at"])
+                        or not any(shape in compact for shape in shapes)
+                        or not isinstance(parameters, (tuple, list)) or len(parameters) < 2):
+                    raise RuntimeError("unsupported domain error persistence")
+                parameters = (*parameters[:-2], "domain_processing_failed", parameters[-1])
+            elif "'processed'" not in normalized and "'warning'" not in normalized:
+                # The success path may also retain ordinary source warnings.
+                success_sql = ("insertintodomain_run(run_id,domain_id,file_id,status,source_hash,error,created_at)"
+                               "values(?,?,?,?,?,?,?)")
+                if (normalized.replace(" ", "") != success_sql or len(parameters) != 7
+                        or parameters[3] not in ("processed", "warning")
+                        or parameters[3] == "processed" and parameters[5] is not None):
+                    raise RuntimeError("unsupported domain persistence")
+        return self._conn.execute(sql, parameters)
+
+    def executemany(self, sql, parameters):
+        normalized = " ".join(sql.lower().split())
+        if "domain_run" in normalized or "domain_state" in normalized:
+            raise RuntimeError("unsupported domain persistence")
+        return self._conn.executemany(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 def run_pipeline(
     conn: sqlite3.Connection,
     settings: Any,
@@ -119,8 +167,32 @@ def run_pipeline(
     run_date: str | None = None,
     dry_run: bool = False,
     lock_path: str | Path | None = None,
+    feedback: bool = True,
 ) -> RunResult:
     """Execute the daily batch pipeline (stages 0..14)."""
+    if dry_run:
+        # A caller may supply the live connection directly. Never let a preview
+        # mutate it, including on early return or exception.
+        if conn.in_transaction:
+            raise ValueError("dry-run requires a connection without an open transaction")
+        from . import db
+        preview = db.connect(":memory:")
+        old_conn, old_run_id = llm.conn, llm.run_id
+        old_stats = dict(llm.stats)
+        try:
+            conn.backup(preview)
+            return _run_pipeline(preview, settings, dynalist, llm, run_date=run_date,
+                                 dry_run=True, lock_path=lock_path, feedback=feedback)
+        finally:
+            llm.conn, llm.run_id = old_conn, old_run_id
+            llm.stats.clear()
+            llm.stats.update(old_stats)
+            preview.close()
+    return _run_pipeline(conn, settings, dynalist, llm, run_date=run_date,
+                         dry_run=False, lock_path=lock_path, feedback=feedback)
+
+
+def _run_pipeline(conn, settings, dynalist, llm, *, run_date, dry_run, lock_path, feedback):
     tz_name = getattr(settings, "timezone", "Asia/Seoul")
     r_date = run_date or clock.local_date(tz_name).isoformat()
     bot_tag = getattr(getattr(settings, "tags", None), "bot", "tutorbot")
@@ -139,6 +211,13 @@ def run_pipeline(
                     source_profile = profiles.get(source_domain)
                     if source_profile is not None and getattr(source_profile, "enabled", False):
                         file_ids.extend(getattr(source_profile, "file_ids", []))
+    base_file_ids = list(dict.fromkeys(file_ids))
+    rules = getattr(settings, "feedback_rules", None) if feedback else None
+    fallback_error = bool(rules and any(issue.code == "FR-G009" and issue.severity == "error"
+                                        for issue in rules.issues))
+    feedback_enabled = bool(rules and not fallback_error and rules.enabled and (rules.tasks or rules.issues))
+    if feedback_enabled:
+        file_ids.extend(rules.file_ids())
     file_ids = list(dict.fromkeys(file_ids))
 
     lpath = lock_path or (Path(getattr(settings, "db_path", "data/tutorbot.sqlite3")).parent / "tutorbot.lock")
@@ -157,29 +236,42 @@ def run_pipeline(
 
         errors: list[str] = []
         stats: dict[str, Any] = {}
+        if fallback_error:
+            logging.getLogger(__name__).error("feedback_config_error code=FR-G009")
+            errors.append("feedback_config_error:FR-G009")
+        from .feedback import store as feedback_store
+        from .feedback.flush_adapter import flush_feedback_safe
 
         # Stage 1: Flush residual write_ops from previous runs
         pre_flush = WriteReport()
         if not dry_run:
-            pre_flush = flush_outbox(conn, dynalist)
+            sensitive_flush = feedback_enabled or bool(conn.execute(
+                "SELECT 1 FROM write_op WHERE bot_kind IN ('feedback_rule','feedback_rule_item') "
+                "AND status IN ('pending','failed') LIMIT 1").fetchone())
+            pre_flush = flush_feedback_safe(conn, dynalist, redact_all=sensitive_flush)
+            feedback_store.sync_output_status(conn, now_iso=clock.now_iso())
             stats["pre_flush"] = {
                 "done": pre_flush.done,
                 "reconciled": pre_flush.reconciled,
                 "skipped": pre_flush.skipped,
                 "failed": pre_flush.failed,
             }
-            errors.extend(pre_flush.errors)
+            if pre_flush.errors:
+                errors.append("pre_flush_failed")
 
         # Stage 2: Read documents -> NodeIndex
+        if feedback_enabled:
+            from .feedback.timefilter import floor_to_second
+            feedback_T = floor_to_second(clock.now())
         indices: dict[str, NodeIndex] = {}
         for fid in file_ids:
             try:
                 indices[fid] = NodeIndex.from_doc_read(fid, dynalist.doc_read(fid))
-            except Exception as e:
-                errors.append(f"doc_read({fid}) failed: {e}")
+            except Exception:  # noqa: BLE001 - remote errors may contain private content
+                errors.append("doc_read_failed")
         study_indices = {fid: indices[fid] for fid in study_file_ids if fid in indices}
 
-        if file_ids and not indices:
+        if base_file_ids and not any(fid in indices for fid in base_file_ids):
             # All documents failed to read -> run=failed
             finished_at = clock.now_iso()
             conn.execute(
@@ -282,11 +374,27 @@ def run_pipeline(
         )
         if has_configured_domains:
             domain_report = process_domains(
-                conn, indices, settings, llm, run_id=run_id, run_date=r_date, bot_tag=bot_tag,
+                _DomainErrorConnection(conn), indices, settings, llm,
+                run_id=run_id, run_date=r_date, bot_tag=bot_tag,
             )
             domain_stats = domain_report.summary()
             stats["domains"] = domain_stats
-            errors.extend(domain_report.errors)
+            if domain_report.errors:
+                errors.append("domain_processing_failed")
+
+        feedback_rep = None
+        if feedback_enabled:
+            try:
+                from .feedback.service import run_feedback_stage
+                feedback_rep = run_feedback_stage(conn, settings, llm, indices, T=feedback_T,
+                    run_id=run_id, dry_run=dry_run, bot_tag=bot_tag, token_budget=token_budget)
+                stats["feedback"] = feedback_rep.summary()
+                if feedback_rep.errors:
+                    errors.append("feedback_stage_reported_error")
+            except Exception:  # noqa: BLE001 - isolate the feedback stage
+                logging.getLogger(__name__).error("feedback_stage_failed")
+                errors.append("feedback_stage_failed")
+                feedback_store.interrupt_current_runs(conn, run_id, now_iso=clock.now_iso())
 
         # Stage 13: Write (Outbox execution)
         if dry_run:
@@ -296,7 +404,17 @@ def run_pipeline(
             stats["dry_run_pending_ops"] = [dict(r) for r in pending_ops]
             write_rep = WriteReport()
         else:
-            write_rep = flush_outbox(conn, dynalist, indices=indices)
+            sensitive_flush = feedback_enabled or bool(conn.execute(
+                "SELECT 1 FROM write_op WHERE bot_kind IN ('feedback_rule','feedback_rule_item') "
+                "AND status IN ('pending','failed') LIMIT 1").fetchone())
+            from .feedback.service import finalize_after_flush
+            try:
+                write_rep = flush_feedback_safe(conn, dynalist, indices=indices, redact_all=sensitive_flush)
+            except Exception:
+                feedback_store.interrupt_current_runs(conn, run_id, now_iso=clock.now_iso())
+                raise
+            finally:
+                finalized = finalize_after_flush(conn, run_id, now_iso=clock.now_iso())
             stats["write"] = {
                 "done": write_rep.done,
                 "reconciled": write_rep.reconciled,
@@ -304,7 +422,12 @@ def run_pipeline(
                 "failed": write_rep.failed,
                 "changes_sent": write_rep.changes_sent,
             }
-            errors.extend(write_rep.errors)
+            if write_rep.errors:
+                errors.append("write_failed")
+            if feedback_rep is not None:
+                feedback_rep.failed += finalized["failed"]
+                feedback_rep.ran = max(0, feedback_rep.ran - finalized["failed"])
+                stats["feedback"] = feedback_rep.summary()
 
         # Stage 14: Finish run_log
         has_partial = (
@@ -319,6 +442,7 @@ def run_pipeline(
             or pre_flush.failed > 0
             or write_rep.skipped > 0
             or write_rep.failed > 0
+            or bool(feedback_rep and (feedback_rep.failed or feedback_rep.invalid or feedback_rep.skipped_error))
         )
         final_status = "partial" if has_partial else "ok"
         finished_at = clock.now_iso()
@@ -352,14 +476,21 @@ def save_devlog_run_log(
     run_time: str,
     log_text: str,
 ) -> WriteReport:
-    """Enqueue and flush one captured run log in each configured devlog document."""
+    """Enqueue and flush the log under the same global lock as the pipeline."""
+    lpath = Path(getattr(settings, "db_path", "data/tutorbot.sqlite3")).parent / "tutorbot.lock"
+    with FileLock(lpath):
+        return _save_devlog_run_log_locked(conn, settings, dynalist, run_id=run_id,
+                                           run_date=run_date, run_time=run_time, log_text=log_text)
+
+
+def _save_devlog_run_log_locked(conn, settings, dynalist, *, run_id, run_date, run_time, log_text):
     from .dynalist.writer import enqueue_op
+    from .feedback.flush_adapter import flush_feedback_safe
 
     profile = getattr(settings, "domains", {}).get("devlog")
     if profile is None or not getattr(profile, "enabled", False):
         return WriteReport()
 
-    report = WriteReport()
     for file_id in dict.fromkeys(getattr(profile, "file_ids", [])):
         index = NodeIndex.from_doc_read(file_id, dynalist.doc_read(file_id))
         date_content = f"!({run_date})"
@@ -419,4 +550,4 @@ def save_devlog_run_log(
             conn.execute("ROLLBACK")
             raise
 
-    return flush_outbox(conn, dynalist)
+    return flush_feedback_safe(conn, dynalist, redact_all=True)

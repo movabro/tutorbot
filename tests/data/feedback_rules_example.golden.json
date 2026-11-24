@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "template_sha256": "d672f86b50b10b89c58e2b8838bc3c9335c26434195ecacf7fe786749d827dd3",
-    "generated_with": "tomli 3.10.12"
+    "template_sha256": "d5aab2dcc532b4363803431de36ab49d930bd8ccfad56cc0506f17abde3b1380",
+    "generated_with": "tomllib 3.13.3"
   },
   "data": {
     "feedback_rules": {
